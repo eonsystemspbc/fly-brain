@@ -281,7 +281,8 @@ def _run_standalone_benchmark(t_run_sec, n_run, use_cuda, exc, exc2, slnc,
 def _run_parallel_benchmark(t_run_sec, n_run, exc, exc2, slnc, logger,
                             exp_name, timings):
     """Run benchmark using joblib parallelization across CPU cores."""
-    n_cores = os.cpu_count() or 1
+    total_cores = os.cpu_count() or 1
+    n_cores = max(1, total_cores - 4)
     t_run = t_run_sec * 1000 * ms
 
     trial_params = dict(default_params)
@@ -292,11 +293,11 @@ def _run_parallel_benchmark(t_run_sec, n_run, exc, exc2, slnc, logger,
 
     logger.log(
         f"Running {n_run} trial(s) in parallel "
-        f"(joblib, {n_cores} cores)..."
+        f"(joblib, {n_cores}/{total_cores} cores)..."
     )
 
     t_simulation_start = time()
-    with parallel_backend('loky', n_jobs=-1):
+    with parallel_backend('loky', n_jobs=n_cores):
         simulation_results = Parallel()(
             delayed(_run_trial_cpu)(
                 exc, exc2, slnc, str(path_comp), str(path_con), trial_params

@@ -41,7 +41,7 @@ python main.py --t_run 0.1 1 10 --n_run 1
 python main.py --nestgpu --t_run 1 --n_run 1
 
 # Combine frameworks
-python main.py --cpu --pytorch --t_run 0.1 1 --n_run 1 30
+python main.py --brian2-cpu --pytorch --t_run 0.1 1 --n_run 1 30
 ```
 
 Results are incrementally saved to `data/benchmark-results.csv` as each
@@ -80,8 +80,8 @@ conda activate brain-fly
 python main.py --t_run 1 --n_run 1 --no_log_file
 
 # Specific backends (combinable)
-python main.py --cpu                          # Brian2 CPU only
-python main.py --gpu                          # Brian2CUDA GPU only
+python main.py --brian2-cpu                    # Brian2 CPU only
+python main.py --brian2cuda-gpu               # Brian2CUDA GPU only
 python main.py --pytorch                      # PyTorch only
 python main.py --nestgpu                      # NEST GPU only
 python main.py --pytorch --nestgpu            # PyTorch + NEST GPU
@@ -95,8 +95,8 @@ python main.py
 | Flag | Description |
 |---|---|
 | *(default)* | Run all: Brian2 (CPU) → Brian2CUDA (GPU) → PyTorch → NEST GPU |
-| `--cpu` | Brian2 C++ standalone (CPU) only |
-| `--gpu` | Brian2CUDA (GPU) only |
+| `--brian2-cpu` | Brian2 C++ standalone (CPU) only |
+| `--brian2cuda-gpu` | Brian2CUDA (GPU) only |
 | `--pytorch` | PyTorch (GPU/CPU) only |
 | `--nestgpu` | NEST GPU only |
 | `--t_run` | Simulation duration(s) in seconds, e.g. `--t_run 0.1 1 10` |
@@ -104,7 +104,7 @@ python main.py
 | `--log_file FILE` | Write log to file (default: `data/results/benchmarks.log`) |
 | `--no_log_file` | Console output only |
 
-Backend flags are combinable: `--cpu --pytorch` runs Brian2 CPU then PyTorch.
+Backend flags are combinable: `--brian2-cpu --pytorch` runs Brian2 CPU then PyTorch.
 
 ## Project structure
 

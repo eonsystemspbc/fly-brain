@@ -9,11 +9,11 @@ Usage:
     python main.py --t_run 0.1 1 10 --n_run 1
 
     # Specific backends (combinable)
-    python main.py --cpu                      # Brian2 CPU only
-    python main.py --gpu                      # Brian2CUDA GPU only
-    python main.py --pytorch                  # PyTorch only
-    python main.py --nestgpu                  # NEST GPU only
-    python main.py --cpu --pytorch --nestgpu  # Brian2 CPU + PyTorch + NEST GPU
+    python main.py --brian2-cpu                          # Brian2 CPU only
+    python main.py --brian2cuda-gpu                      # Brian2CUDA GPU only
+    python main.py --pytorch                             # PyTorch only
+    python main.py --nestgpu                             # NEST GPU only
+    python main.py --brian2-cpu --pytorch --nestgpu      # Brian2 CPU + PyTorch + NEST GPU
 
     # Background with log
     nohup python main.py > data/results/benchmarks.log 2>&1 &
@@ -48,9 +48,9 @@ def main():
     parser.add_argument('--no_log_file', action='store_true',
                         help='Disable file logging (console only)')
 
-    parser.add_argument('--cpu', action='store_true',
+    parser.add_argument('--brian2-cpu', action='store_true',
                         help='Run Brian2 C++ standalone (CPU)')
-    parser.add_argument('--gpu', action='store_true',
+    parser.add_argument('--brian2cuda-gpu', action='store_true',
                         help='Run Brian2CUDA (GPU)')
     parser.add_argument('--pytorch', action='store_true',
                         help='Run PyTorch benchmark')
@@ -60,13 +60,13 @@ def main():
     args = parser.parse_args()
 
     # If no backend flags specified, run all
-    if not (args.cpu or args.gpu or args.pytorch or args.nestgpu):
+    if not (args.brian2_cpu or args.brian2cuda_gpu or args.pytorch or args.nestgpu):
         backends = ['cpu', 'gpu', 'pytorch', 'nestgpu']
     else:
         backends = []
-        if args.cpu:
+        if args.brian2_cpu:
             backends.append('cpu')
-        if args.gpu:
+        if args.brian2cuda_gpu:
             backends.append('gpu')
         if args.pytorch:
             backends.append('pytorch')
