@@ -138,7 +138,7 @@ class BenchmarkLogger:
 CSV_COLUMNS = [
     'framework', 'n_run', 't_run',
     'setup_time', 'build_time', 'sim_time', 'total_time',
-    'realtime_ratio', 'spikes', 'active_neurons', 'status', 'timestamp',
+    'rts_ratio', 'spikes', 'active_neurons', 'status', 'timestamp', 
 ]
 
 
