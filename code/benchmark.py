@@ -25,7 +25,9 @@ from datetime import datetime
 # ============================================================================
 
 T_RUN_VALUES_SEC = [0.1, 1, 10, 100, 1000]
+PAPER_T_RUN_VALUES_SEC = [0.1, 1.0, 10.0, 100.0]
 N_RUN_VALUES = [1, 4, 8, 16, 32]
+PAPER_ROUNDS = 5
 
 # ============================================================================
 # Paths and Constants
@@ -37,6 +39,7 @@ path_con = (current_dir / '../data/2025_Connectivity_783.parquet').resolve()
 path_res = (current_dir / '../data/results').resolve()
 path_wt = (current_dir / '../data').resolve()
 csv_path = (current_dir / '../data/benchmark-results.csv').resolve()
+repo_dir = current_dir.parent.resolve()
 
 # ============================================================================
 # Experiment Definitions
@@ -139,14 +142,149 @@ CSV_COLUMNS = [
     'framework', 'n_run', 't_run',
     'setup_time', 'build_time', 'sim_time', 'total_time',
     'realtime_ratio', 'spikes', 'active_neurons', 'status', 'timestamp',
+    'backend_key', 'experiment', 'experiment_key', 'run_label', 'round',
+    'spike_path',
 ]
+
+MANIFEST_COLUMNS = [
+    'run_label', 'round', 'framework', 'backend_key',
+    'experiment', 'experiment_key', 'n_run', 't_run',
+    'spike_path', 'spikes', 'active_neurons', 'status', 'timestamp',
+    'spike_schema_version', 'spike_time_column', 'spike_time_unit',
+]
+
+
+def sanitize_run_label(run_label):
+    """Return a filesystem-safe run label while keeping it human-readable."""
+    if not run_label:
+        return None
+    safe = ''.join(c if c.isalnum() or c in ('-', '_') else '_' for c in run_label)
+    safe = safe.strip('_')
+    return safe or None
+
+
+def default_run_label():
+    """Create a stable label for a multi-round paper benchmark invocation."""
+    return datetime.now().strftime('paper_%Y%m%d_%H%M%S')
+
+
+def get_spike_output_dir(run_label=None, round_idx=None):
+    """Directory for spike parquet outputs for a benchmark invocation."""
+    output = Path(path_res)
+    run_label = sanitize_run_label(run_label)
+    if run_label:
+        output = output / run_label
+    if round_idx is not None:
+        output = output / f'round_{int(round_idx):02d}'
+    return output
+
+
+def get_spike_output_path(exp_name, run_label=None, round_idx=None):
+    """Path for a benchmark's per-spike parquet file."""
+    return get_spike_output_dir(run_label, round_idx) / f'{exp_name}.parquet'
+
+
+def relative_to_repo(path):
+    """Render paths relative to the repo when possible for portable CSVs."""
+    if not path:
+        return ''
+    p = Path(path)
+    try:
+        return str(p.resolve().relative_to(repo_dir)).replace('\\', '/')
+    except ValueError:
+        return str(p)
+
+
+def _csv_key(row):
+    """Composite key for CSV updates.
+
+    Legacy rows did not have run metadata, so unlabeled one-off benchmarks keep
+    the old overwrite behavior. Labeled paper rounds are keyed by their run
+    label and round number so repeated parameter sets are preserved.
+    """
+    base = (
+        row.get('framework', ''),
+        str(row.get('n_run', '')),
+        str(row.get('t_run', '')),
+    )
+    if row.get('run_label') or row.get('round'):
+        return base + (
+            row.get('experiment_key', ''),
+            row.get('run_label', ''),
+            str(row.get('round', '')),
+        )
+    return base
+
+
+def _save_manifest_csv(result, row):
+    """Write/update a compact manifest for round-specific spike outputs."""
+    run_label = row.get('run_label', '')
+    if not run_label or not row.get('spike_path'):
+        return
+
+    manifest_path = path_res / run_label / 'manifest.csv'
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    manifest_row = {
+        'run_label': row.get('run_label', ''),
+        'round': row.get('round', ''),
+        'framework': row.get('framework', ''),
+        'backend_key': row.get('backend_key', ''),
+        'experiment': row.get('experiment', ''),
+        'experiment_key': row.get('experiment_key', ''),
+        'n_run': row.get('n_run', ''),
+        't_run': row.get('t_run', ''),
+        'spike_path': row.get('spike_path', ''),
+        'spikes': row.get('spikes', ''),
+        'active_neurons': row.get('active_neurons', ''),
+        'status': row.get('status', ''),
+        'timestamp': row.get('timestamp', ''),
+        'spike_schema_version': '1',
+        'spike_time_column': 'time_ms',
+        'spike_time_unit': 'ms',
+    }
+
+    existing_rows = []
+    if manifest_path.exists():
+        with open(manifest_path, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            for existing in reader:
+                existing_rows.append(existing)
+
+    key = (
+        manifest_row['framework'],
+        manifest_row['n_run'],
+        manifest_row['t_run'],
+        manifest_row['round'],
+    )
+    updated = False
+    for i, existing in enumerate(existing_rows):
+        existing_key = (
+            existing.get('framework', ''),
+            existing.get('n_run', ''),
+            existing.get('t_run', ''),
+            existing.get('round', ''),
+        )
+        if existing_key == key:
+            existing_rows[i] = manifest_row
+            updated = True
+            break
+
+    if not updated:
+        existing_rows.append(manifest_row)
+
+    with open(manifest_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=MANIFEST_COLUMNS)
+        writer.writeheader()
+        writer.writerows(existing_rows)
 
 
 def save_result_csv(backend_name, result):
     """Append or update a benchmark result row in the CSV file.
 
-    Uses (framework, n_run, t_run) as the composite key.  If a row with the
-    same key already exists it is replaced; otherwise a new row is appended.
+    Unlabeled one-off runs keep the legacy (framework, n_run, t_run) key.
+    Labeled repeated runs also key by experiment, run_label, and round so
+    paper benchmark replicates are preserved instead of overwriting each other.
     """
     path_res.mkdir(parents=True, exist_ok=True)
 
@@ -166,22 +304,26 @@ def save_result_csv(backend_name, result):
         'active_neurons': result.get('n_active_neurons', 0),
         'status': result.get('status', 'unknown'),
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'backend_key': result.get('backend_key', ''),
+        'experiment': result.get('experiment_name', ''),
+        'experiment_key': result.get('experiment_key', ''),
+        'run_label': result.get('run_label', ''),
+        'round': result.get('round', ''),
+        'spike_path': relative_to_repo(result.get('spike_path')),
     }
 
-    key = (row['framework'], str(row['n_run']), str(row['t_run']))
+    key = _csv_key(row)
 
     existing_rows = []
     if csv_path.exists():
         with open(csv_path, 'r', newline='') as f:
             reader = csv.DictReader(f)
             for r in reader:
-                existing_rows.append(r)
+                existing_rows.append({col: r.get(col, '') for col in CSV_COLUMNS})
 
     updated = False
     for i, r in enumerate(existing_rows):
-        existing_key = (r.get('framework', ''),
-                        str(r.get('n_run', '')),
-                        str(r.get('t_run', '')))
+        existing_key = _csv_key(r)
         if existing_key == key:
             existing_rows[i] = {k: str(v) for k, v in row.items()}
             updated = True
@@ -194,6 +336,8 @@ def save_result_csv(backend_name, result):
         writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
         writer.writeheader()
         writer.writerows(existing_rows)
+
+    _save_manifest_csv(result, row)
 
 
 # ============================================================================
@@ -256,7 +400,8 @@ BACKEND_NAMES = {
 
 
 def run_benchmarks(backends, t_run_values=None, n_run_values=None,
-                   experiment=None, logger=None):
+                   experiment=None, logger=None, rounds=1, run_label=None,
+                   round_start=1):
     """
     Run benchmarks for the specified backends.
 
@@ -266,6 +411,9 @@ def run_benchmarks(backends, t_run_values=None, n_run_values=None,
         n_run_values: list of n_run values, or None for N_RUN_VALUES
         experiment: experiment config dict from get_experiment()
         logger: BenchmarkLogger instance
+        rounds: number of repeated benchmark rounds to run
+        run_label: optional label used to group round-specific spike outputs
+        round_start: first round number to write, for resuming interrupted runs
 
     Returns:
         dict mapping backend key to list of result dicts
@@ -275,57 +423,86 @@ def run_benchmarks(backends, t_run_values=None, n_run_values=None,
 
     all_results = {}
     total_backends = len(backends)
+    rounds = int(rounds or 1)
+    if rounds < 1:
+        raise ValueError('rounds must be >= 1')
+    round_start = int(round_start or 1)
+    if round_start < 1:
+        raise ValueError('round_start must be >= 1')
+    run_label = sanitize_run_label(run_label)
+    if rounds > 1 and not run_label:
+        run_label = default_run_label()
 
     logger.log(f"Experiment: {experiment['name']}")
     logger.log(f"Stimulated neurons: {len(experiment['neu_exc'])} "
                f"at {experiment['stim_rate']} Hz")
+    logger.log(f"Benchmark rounds: {rounds}")
+    if run_label:
+        logger.log(f"Run label: {run_label}")
 
-    for bi, backend in enumerate(backends, 1):
-        logger.log_raw("")
-        logger.log(
-            f">>> Starting backend {bi}/{total_backends}: "
-            f"{BACKEND_NAMES[backend]}"
-        )
+    round_end = round_start + rounds - 1
+    for round_idx in range(round_start, round_end + 1):
+        round_label = round_idx if rounds > 1 or run_label else None
+        if rounds > 1:
+            logger.log_raw("")
+            logger.log_raw("#" * 80)
+            logger.log(f"STARTING BENCHMARK ROUND {round_idx}/{round_end}")
+            logger.log_raw("#" * 80)
 
-        if backend in ('cpu', 'gpu'):
-            from run_brian2_cuda import run_all_benchmarks as run_brian2
-            results = run_brian2(
-                use_cuda=(backend == 'gpu'),
-                t_run_values=t_run_values,
-                n_run_values=n_run_values,
-                experiment=experiment,
-                logger=logger,
+        for bi, backend in enumerate(backends, 1):
+            logger.log_raw("")
+            logger.log(
+                f">>> Starting backend {bi}/{total_backends}: "
+                f"{BACKEND_NAMES[backend]}"
             )
-            all_results[backend] = results
 
-        elif backend == 'pytorch':
-            from run_pytorch import run_all_benchmarks as run_torch
-            results = run_torch(
-                t_run_values=t_run_values,
-                n_run_values=n_run_values,
-                experiment=experiment,
-                logger=logger,
+            if backend in ('cpu', 'gpu'):
+                from run_brian2_cuda import run_all_benchmarks as run_brian2
+                results = run_brian2(
+                    use_cuda=(backend == 'gpu'),
+                    t_run_values=t_run_values,
+                    n_run_values=n_run_values,
+                    experiment=experiment,
+                    logger=logger,
+                    run_label=run_label,
+                    round_idx=round_label,
+                )
+                all_results.setdefault(backend, []).extend(results)
+
+            elif backend == 'pytorch':
+                from run_pytorch import run_all_benchmarks as run_torch
+                results = run_torch(
+                    t_run_values=t_run_values,
+                    n_run_values=n_run_values,
+                    experiment=experiment,
+                    logger=logger,
+                    run_label=run_label,
+                    round_idx=round_label,
+                )
+                all_results.setdefault(backend, []).extend(results)
+
+            elif backend == 'nestgpu':
+                from run_nestgpu import run_all_benchmarks as run_nest
+                results = run_nest(
+                    t_run_values=t_run_values,
+                    n_run_values=n_run_values,
+                    experiment=experiment,
+                    logger=logger,
+                    run_label=run_label,
+                    round_idx=round_label,
+                )
+                all_results.setdefault(backend, []).extend(results)
+
+            logger.log(
+                f"<<< Finished backend {bi}/{total_backends}: "
+                f"{BACKEND_NAMES[backend]}"
             )
-            all_results[backend] = results
-
-        elif backend == 'nestgpu':
-            from run_nestgpu import run_all_benchmarks as run_nest
-            results = run_nest(
-                t_run_values=t_run_values,
-                n_run_values=n_run_values,
-                experiment=experiment,
-                logger=logger,
-            )
-            all_results[backend] = results
-
-        logger.log(
-            f"<<< Finished backend {bi}/{total_backends}: "
-            f"{BACKEND_NAMES[backend]}"
-        )
 
     logger.log_raw("")
     logger.log(f"All {total_backends} backend(s) complete.")
     if csv_path.exists():
         logger.log(f"Results CSV: {csv_path}")
+    if run_label:
+        logger.log(f"Spike manifest: {path_res / run_label / 'manifest.csv'}")
 
     return all_results

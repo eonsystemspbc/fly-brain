@@ -18,14 +18,13 @@ import pickle
 import numpy as np
 import torch
 import torch.nn as nn
-from pathlib import Path
 from time import perf_counter as time
 import traceback
 
 from benchmark import (
     T_RUN_VALUES_SEC, N_RUN_VALUES,
-    path_comp, path_con, path_res, path_wt,
-    get_experiment, print_summary_table, save_result_csv,
+    path_comp, path_con, path_wt,
+    get_experiment, get_spike_output_path, print_summary_table, save_result_csv,
 )
 
 # ============================================================================
@@ -249,7 +248,8 @@ def get_weights(conn_path, comp_path, wt_dir, csr=True):
 # ============================================================================
 
 def run_single_benchmark(t_run_sec, n_run, experiment, logger,
-                         run_idx=None, total_runs=None):
+                         run_idx=None, total_runs=None,
+                         run_label=None, round_idx=None):
     """
     Run a single PyTorch benchmark with specified t_run and n_run.
 
@@ -269,6 +269,10 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
     logger.log(f"Device: {device_name.upper()}")
     logger.log(f"Steps: {num_steps} (dt={DT}ms)")
     logger.log(f"Experiment: {exp_name}")
+    if run_label:
+        logger.log(f"Run label: {run_label}")
+    if round_idx is not None:
+        logger.log(f"Round: {round_idx}")
 
     stim_rate = experiment['stim_rate']
 
@@ -366,23 +370,29 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
             all_batch = torch.cat(spike_batch_idx).numpy()
             all_neurons = torch.cat(spike_neuron_idx).numpy()
             all_times_steps = torch.cat(spike_timesteps).numpy()
+            all_times_ms = all_times_steps * DT
 
             df = pd.DataFrame({
-                't': (all_times_steps * DT).tolist(),
-                'trial': all_batch.tolist(),
+                't': all_times_ms,
+                'trial': all_batch,
+                'neuron_index': all_neurons,
                 'flywire_id': [i2flyid[int(n)] for n in all_neurons],
                 'exp_name': exp_name,
             })
+            df.insert(1, 'time_ms', df['t'])
         else:
             df = pd.DataFrame(
-                {'t': [], 'trial': [], 'flywire_id': [], 'exp_name': []}
+                {
+                    't': [], 'time_ms': [], 'trial': [],
+                    'neuron_index': [], 'flywire_id': [], 'exp_name': [],
+                }
             )
 
         timings['result_collection'] = time() - t_collect_start
 
         t_save_start = time()
-        Path(path_res).mkdir(parents=True, exist_ok=True)
-        path_save = Path(path_res) / f'{exp_name}.parquet'
+        path_save = get_spike_output_path(exp_name, run_label, round_idx)
+        path_save.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(path_save, compression='brotli')
         timings['result_save'] = time() - t_save_start
 
@@ -419,6 +429,12 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
             'n_spikes': n_spikes,
             'status': 'success',
             'timings': timings,
+            'backend_key': 'pytorch',
+            'experiment_name': experiment['name'],
+            'experiment_key': experiment['key'],
+            'run_label': run_label or '',
+            'round': round_idx or '',
+            'spike_path': str(path_save),
         }
 
         # ===== Summary =====
@@ -450,13 +466,19 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
             'n_spikes': 0,
             'status': f'error: {str(e)}',
             'timings': timings,
+            'backend_key': 'pytorch',
+            'experiment_name': experiment['name'],
+            'experiment_key': experiment['key'],
+            'run_label': run_label or '',
+            'round': round_idx or '',
         }
 
     return results
 
 
 def run_all_benchmarks(t_run_values=None, n_run_values=None,
-                       experiment=None, logger=None):
+                       experiment=None, logger=None,
+                       run_label=None, round_idx=None):
     """
     Run all PyTorch benchmark combinations.
 
@@ -492,6 +514,10 @@ def run_all_benchmarks(t_run_values=None, n_run_values=None,
         logger.log(f"GPU: {torch.cuda.get_device_name(0)}")
     logger.log(f"t_run values: {t_run_values} seconds")
     logger.log(f"n_run values: {n_run_values}")
+    if run_label:
+        logger.log(f"Run label: {run_label}")
+    if round_idx is not None:
+        logger.log(f"Round: {round_idx}")
     logger.log(f"Total benchmarks: {total_runs}")
     logger.log_raw("=" * 80)
 
@@ -505,6 +531,8 @@ def run_all_benchmarks(t_run_values=None, n_run_values=None,
             logger=logger,
             run_idx=run_idx,
             total_runs=total_runs,
+            run_label=run_label,
+            round_idx=round_idx,
         )
         all_results.append(result)
         save_result_csv(backend_name, result)

@@ -24,6 +24,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from benchmark import get_spike_output_path
+
 RESULTS_DIR = Path(__file__).resolve().parent / '../data/results'
 OUTPUT_PATH = Path(__file__).resolve().parent / '../data/ground-truth-comparison.json'
 
@@ -40,13 +42,22 @@ GROUND_TRUTH_KEY = 'brian2cpp'
 MS_BACKENDS = {'pytorch'}
 
 
-def load_spike_data(backend_key, t_run, n_run):
+def load_spike_data(backend_key, t_run, n_run, run_label=None, round_idx=None):
     """Load a backend's parquet and return a DataFrame with times in seconds."""
-    path = RESULTS_DIR / f'{backend_key}_t{t_run}s_n{n_run}.parquet'
+    if run_label or round_idx is not None:
+        path = get_spike_output_path(
+            f'{backend_key}_t{t_run}s_n{n_run}', run_label, round_idx,
+        )
+    else:
+        path = RESULTS_DIR / f'{backend_key}_t{t_run}s_n{n_run}.parquet'
     if not path.exists():
         return None
     df = pd.read_parquet(path)
-    if backend_key in MS_BACKENDS:
+    if 'time_ms' in df.columns:
+        df['t'] = df['time_ms'] / 1000.0
+    elif 'time_s' in df.columns:
+        df['t'] = df['time_s']
+    elif backend_key in MS_BACKENDS:
         df['t'] = df['t'] / 1000.0
     return df
 
@@ -156,6 +167,14 @@ def main():
         '-o', '--output', type=str, default=str(OUTPUT_PATH),
         help='Output JSON path',
     )
+    parser.add_argument(
+        '--run-label', '--run_label', dest='run_label', default=None,
+        help='Read round-scoped outputs from data/results/<label>/',
+    )
+    parser.add_argument(
+        '--round', dest='round_idx', type=int, default=None,
+        help='Round number to compare when using --run-label',
+    )
     args = parser.parse_args()
 
     t_run = args.t_run
@@ -163,13 +182,26 @@ def main():
 
     print(f"Ground truth comparison: t_run={t_run}s, n_run={n_run}")
     print(f"Ground truth: {BACKENDS[GROUND_TRUTH_KEY]}")
+    if args.run_label:
+        print(f"Run label: {args.run_label}")
+    if args.round_idx is not None:
+        print(f"Round: {args.round_idx}")
     print()
 
-    gt_df = load_spike_data(GROUND_TRUTH_KEY, t_run, n_run)
+    gt_df = load_spike_data(
+        GROUND_TRUTH_KEY, t_run, n_run, args.run_label, args.round_idx,
+    )
     if gt_df is None:
+        expected_path = get_spike_output_path(
+            f'{GROUND_TRUTH_KEY}_t{t_run}s_n{n_run}',
+            args.run_label,
+            args.round_idx,
+        ) if args.run_label or args.round_idx is not None else (
+            RESULTS_DIR / f'{GROUND_TRUTH_KEY}_t{t_run}s_n{n_run}.parquet'
+        )
         print(
             f"ERROR: ground truth parquet not found: "
-            f"{GROUND_TRUTH_KEY}_t{t_run}s_n{n_run}.parquet"
+            f"{expected_path}"
         )
         sys.exit(1)
 
@@ -186,6 +218,8 @@ def main():
         'experiment': 'sugar GRNs @ 200 Hz (21 neurons)',
         't_run_sec': t_run,
         'n_run': n_run,
+        'run_label': args.run_label,
+        'round': args.round_idx,
         'ground_truth_spikes': int(len(gt_df)),
         'ground_truth_active_neurons': int(gt_rates.index.nunique()),
         'comparisons': {},
@@ -195,7 +229,9 @@ def main():
         if key == GROUND_TRUTH_KEY:
             continue
 
-        other_df = load_spike_data(key, t_run, n_run)
+        other_df = load_spike_data(
+            key, t_run, n_run, args.run_label, args.round_idx,
+        )
         if other_df is None:
             print(f"  {name}: parquet not found — skipped")
             output['comparisons'][name] = {'status': 'no data'}

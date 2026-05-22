@@ -11,7 +11,6 @@ import warnings
 warnings.filterwarnings('ignore', category=UserWarning)
 
 import pandas as pd
-from pathlib import Path
 from textwrap import dedent
 from time import perf_counter as time
 import traceback
@@ -28,8 +27,8 @@ from joblib import Parallel, delayed, parallel_backend
 
 from benchmark import (
     T_RUN_VALUES_SEC, N_RUN_VALUES,
-    output_dir, path_comp, path_con, path_res,
-    get_experiment, print_summary_table, save_result_csv,
+    output_dir, path_comp, path_con,
+    get_experiment, get_spike_output_path, print_summary_table, save_result_csv,
 )
 
 # ============================================================================
@@ -245,15 +244,21 @@ def _run_standalone_benchmark(t_run_sec, n_run, use_cuda, exc, exc2, slnc,
 
     simulation_results = []
     trial_times = []
+    simulation_run_total = 0.0
+    spike_extraction_total = 0.0
 
     t_simulation_start = time()
     for trial_idx in range(n_run):
         t_trial_start = time()
+        t_run_start = time()
         brian_device.run(with_output=False)
+        run_time = time() - t_run_start
+        simulation_run_total += run_time
 
         t_extract_start = time()
         spk_trn = {k: v for k, v in spk_mon.spike_trains().items() if len(v)}
         t_extract = time() - t_extract_start
+        spike_extraction_total += t_extract
 
         trial_time = time() - t_trial_start
         trial_times.append(trial_time)
@@ -262,13 +267,17 @@ def _run_standalone_benchmark(t_run_sec, n_run, use_cuda, exc, exc2, slnc,
         if n_run <= 5 or (trial_idx + 1) % 5 == 0 or trial_idx == 0:
             logger.log(
                 f"  Trial {trial_idx + 1}/{n_run}: "
-                f"{trial_time:.3f}s (extract: {t_extract:.3f}s)"
+                f"{trial_time:.3f}s "
+                f"(run: {run_time:.3f}s, extract: {t_extract:.3f}s)"
             )
 
-    timings['simulation_total'] = time() - t_simulation_start
+    timings['simulation_total'] = simulation_run_total
     timings['simulation_avg_per_trial'] = timings['simulation_total'] / n_run
+    timings['spike_extraction_total'] = spike_extraction_total
+    timings['simulation_wall_total'] = time() - t_simulation_start
 
     logger.log(f"  Total simulation: {timings['simulation_total']:.3f}s")
+    logger.log(f"  Spike extraction: {timings['spike_extraction_total']:.3f}s")
     logger.log(f"  Avg per trial:    {timings['simulation_avg_per_trial']:.3f}s")
 
     return simulation_results, timings
@@ -316,7 +325,8 @@ def _run_parallel_benchmark(t_run_sec, n_run, exc, exc2, slnc, params,
 # ============================================================================
 
 def run_single_benchmark(t_run_sec, n_run, use_cuda, experiment, logger,
-                         run_idx=None, total_runs=None):
+                         run_idx=None, total_runs=None,
+                         run_label=None, round_idx=None):
     """Run a single Brian2 benchmark with specified t_run and n_run.
 
     CPU n_run>1  → joblib parallel (runtime mode, all cores)
@@ -334,6 +344,10 @@ def run_single_benchmark(t_run_sec, n_run, use_cuda, experiment, logger,
     logger.log(f"Device: {device_location} "
                f"({'CUDA' if use_cuda else 'C++'})")
     logger.log(f"Experiment: {exp_name}")
+    if run_label:
+        logger.log(f"Run label: {run_label}")
+    if round_idx is not None:
+        logger.log(f"Round: {round_idx}")
 
     params = dict(default_params)
     params['r_poi'] = experiment['stim_rate'] * Hz
@@ -381,15 +395,17 @@ def run_single_benchmark(t_run_sec, n_run, use_cuda, experiment, logger,
         df = pd.DataFrame({
             't': ts,
             'trial': trials,
+            'neuron_index': ids,
             'flywire_id': [i2flyid[i] for i in ids],
             'exp_name': exp_name,
         })
+        df.insert(1, 'time_ms', df['t'] * 1000.0)
 
         timings['result_collection'] = time() - t_collect_start
 
         t_save_start = time()
-        Path(path_res).mkdir(parents=True, exist_ok=True)
-        path_save = Path(path_res) / f'{exp_name}.parquet'
+        path_save = get_spike_output_path(exp_name, run_label, round_idx)
+        path_save.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(path_save, compression='brotli')
         timings['result_save'] = time() - t_save_start
 
@@ -403,6 +419,7 @@ def run_single_benchmark(t_run_sec, n_run, use_cuda, experiment, logger,
             timings['network_creation_total'] +
             timings.get('device_build', 0) +
             timings['simulation_total'] +
+            timings.get('spike_extraction_total', 0) +
             timings['result_collection'] +
             timings['result_save']
         )
@@ -427,6 +444,12 @@ def run_single_benchmark(t_run_sec, n_run, use_cuda, experiment, logger,
             'n_spikes': n_spikes,
             'status': 'success',
             'timings': timings,
+            'backend_key': 'brian2cuda' if use_cuda else 'brian2cpp',
+            'experiment_name': experiment['name'],
+            'experiment_key': experiment['key'],
+            'run_label': run_label or '',
+            'round': round_idx or '',
+            'spike_path': str(path_save),
         }
 
         # ===== Summary =====
@@ -437,6 +460,8 @@ def run_single_benchmark(t_run_sec, n_run, use_cuda, experiment, logger,
         logger.log(f"  Network creation:   {timings['network_creation_total']:>10.3f}s")
         logger.log(f"  Device build:       {timings.get('device_build', 0):>10.3f}s")
         logger.log(f"  Simulation:         {timings['simulation_total']:>10.3f}s")
+        if timings.get('spike_extraction_total', 0):
+            logger.log(f"  Spike extraction:   {timings['spike_extraction_total']:>10.3f}s")
         logger.log(f"  Result processing:  "
                    f"{timings['result_collection'] + timings['result_save']:>10.3f}s")
         logger.log(f"  -----------------------------------------")
@@ -463,13 +488,19 @@ def run_single_benchmark(t_run_sec, n_run, use_cuda, experiment, logger,
             'n_spikes': 0,
             'status': f'error: {str(e)}',
             'timings': timings,
+            'backend_key': 'brian2cuda' if use_cuda else 'brian2cpp',
+            'experiment_name': experiment['name'],
+            'experiment_key': experiment['key'],
+            'run_label': run_label or '',
+            'round': round_idx or '',
         }
 
     return results
 
 
 def run_all_benchmarks(use_cuda, t_run_values=None, n_run_values=None,
-                       experiment=None, logger=None):
+                       experiment=None, logger=None,
+                       run_label=None, round_idx=None):
     """Run all Brian2/Brian2CUDA benchmark combinations."""
     if t_run_values is None:
         t_run_values = T_RUN_VALUES_SEC
@@ -495,6 +526,10 @@ def run_all_benchmarks(use_cuda, t_run_values=None, n_run_values=None,
     logger.log(f"Device: {device_label}")
     logger.log(f"t_run values: {t_run_values} seconds")
     logger.log(f"n_run values: {n_run_values}")
+    if run_label:
+        logger.log(f"Run label: {run_label}")
+    if round_idx is not None:
+        logger.log(f"Round: {round_idx}")
     logger.log(f"Total benchmarks: {total_runs}")
     logger.log_raw("=" * 80)
 
@@ -509,6 +544,8 @@ def run_all_benchmarks(use_cuda, t_run_values=None, n_run_values=None,
             logger=logger,
             run_idx=run_idx,
             total_runs=total_runs,
+            run_label=run_label,
+            round_idx=round_idx,
         )
         all_results.append(result)
         save_result_csv(backend_name, result)

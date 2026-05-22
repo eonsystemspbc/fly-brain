@@ -42,11 +42,36 @@ python main.py --nestgpu --t_run 1 --n_run 1
 
 # Combine frameworks
 python main.py --brian2-cpu --pytorch --t_run 0.1 1 --n_run 1 4 8 16 32
+
+# Five-round Nature-paper benchmark suite
+# Uses the March grid: t_run=(0.1,1,10,100), n_run=(1,4,8,16,32), all 4 backends
+python main.py --paper --run-label nature_2026_05
 ```
 
 Results are incrementally saved to `data/benchmark-results.csv` as each
 benchmark completes, with separate columns for setup time (loading, compilation)
-and simulation time (the always-on cost).
+and simulation time (the always-on cost). For repeated paper runs, the CSV keeps
+the original March rows and appends new rows keyed by `run_label` and `round`;
+the corresponding spike parquet path is recorded in `spike_path`.
+
+Spike timing exports are written after the benchmarked simulation section so
+file I/O does not contaminate `sim_time`. A labeled paper run writes partitioned
+outputs like:
+
+```text
+data/results/nature_2026_05/
+├── manifest.csv
+├── round_01/
+│   ├── brian2cpp_t1.0s_n1.parquet
+│   ├── brian2cuda_t1.0s_n1.parquet
+│   ├── pytorch_t1.0s_n1.parquet
+│   └── nestgpu_t1.0s_n1.parquet
+└── round_02/
+```
+
+Each spike parquet has one row per spike. The canonical timing column for new
+exports is `time_ms`, with `trial`, `neuron_index`, `flywire_id`, and `exp_name`.
+The legacy `t` column is kept for existing analysis scripts.
 
 ### Ground truth comparison
 
@@ -61,6 +86,7 @@ output:
 ```bash
 python code/compare_ground_truth.py                  # default: t_run=1s, n_run=1
 python code/compare_ground_truth.py --t_run 10 --n_run 4   # longer / averaged
+python code/compare_ground_truth.py --run-label nature_2026_05 --round 1
 ```
 
 This computes active-neuron overlap (Jaccard), per-neuron firing-rate
@@ -156,6 +182,9 @@ python main.py --pytorch --nestgpu            # PyTorch + NEST GPU
 
 # Full benchmark suite (all durations, n_run=1,4,8,16,32, all backends)
 python main.py
+
+# Nature-paper suite: all backends, March parameter grid, 5 rounds
+python main.py --paper --run-label nature_2026_05
 ```
 
 ### `main.py` options
@@ -169,6 +198,10 @@ python main.py
 | `--nestgpu` | NEST GPU only |
 | `--t_run` | Simulation duration(s) in seconds, e.g. `--t_run 0.1 1 10` |
 | `--n_run` | Number of independent trials, e.g. `--n_run 1 4 8 16 32` |
+| `--paper` | Run the paper suite: `t_run=[0.1,1,10,100]`, `n_run=[1,4,8,16,32]`, 5 rounds |
+| `--rounds` | Repeat the full selected backend/parameter suite N times |
+| `--round-start` | First round number to write, useful for resuming a labeled run |
+| `--run-label` | Group repeated spike outputs under `data/results/<label>/` and append labeled CSV rows |
 | `--log_file FILE` | Write log to file (default: `data/results/benchmarks.log`) |
 | `--no_log_file` | Console output only |
 

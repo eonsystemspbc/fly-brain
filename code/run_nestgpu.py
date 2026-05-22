@@ -22,8 +22,8 @@ import traceback
 
 from benchmark import (
     T_RUN_VALUES_SEC, N_RUN_VALUES,
-    path_comp, path_con, path_res,
-    get_experiment, print_summary_table, save_result_csv,
+    path_comp, path_con,
+    get_experiment, get_spike_output_path, print_summary_table, save_result_csv,
 )
 
 # ============================================================================
@@ -51,7 +51,8 @@ MODEL_PARAMS = {
 # Worker: runs a single NEST GPU trial (called via subprocess)
 # ============================================================================
 
-def _run_worker_trial(t_run_sec, trial_num, experiment_name=None):
+def _run_worker_trial(t_run_sec, trial_num, experiment_name=None,
+                      run_label=None, round_idx=None):
     """Build network, simulate, and return timing + spike counts as dict.
 
     Imports nestgpu only here so the main orchestrator process never loads it.
@@ -156,21 +157,29 @@ def _run_worker_trial(t_run_sec, trial_num, experiment_name=None):
         result['n_active_neurons'] = sum(1 for s in spk_trn if len(s) > 0)
         result['status'] = 'success'
 
-        # Save per-trial spike data to temp parquet (ms → seconds)
+        # Save per-trial spike data to temp parquet after simulation timing.
         spike_rows = []
         for neuron_idx, spike_times in enumerate(spk_trn):
             if len(spike_times) > 0:
                 fid = df_comp.index[neuron_idx]
                 for t_ms in spike_times:
-                    spike_rows.append((t_ms / 1000.0, trial_num, fid))
+                    spike_rows.append(
+                        (t_ms / 1000.0, t_ms, trial_num, neuron_idx, fid)
+                    )
         if spike_rows:
-            path_res.mkdir(parents=True, exist_ok=True)
             df_spikes = pd.DataFrame(
-                spike_rows, columns=['t', 'trial', 'flywire_id'],
+                spike_rows,
+                columns=['t', 'time_ms', 'trial', 'neuron_index',
+                         'flywire_id'],
             )
             spike_path = str(
-                path_res / f'nestgpu_t{t_run_sec}s_trial{trial_num}.parquet'
+                get_spike_output_path(
+                    f'nestgpu_t{t_run_sec}s_trial{trial_num}',
+                    run_label,
+                    round_idx,
+                )
             )
+            Path(spike_path).parent.mkdir(parents=True, exist_ok=True)
             df_spikes.to_parquet(spike_path, compression='brotli')
             result['spike_parquet'] = spike_path
 
@@ -192,7 +201,8 @@ class _TrialError(Exception):
     pass
 
 
-def _run_all_trials(t_run_sec, n_run, experiment_name, logger):
+def _run_all_trials(t_run_sec, n_run, experiment_name, logger,
+                    run_label=None, round_idx=None):
     """Spawn n_run subprocess trials.  Raises _TrialError on any failure."""
     trial_results = []
 
@@ -205,6 +215,10 @@ def _run_all_trials(t_run_sec, n_run, experiment_name, logger):
             '--worker', str(t_run_sec), str(trial),
             '--experiment', experiment_name,
         ]
+        if run_label:
+            cmd.extend(['--run-label', run_label])
+        if round_idx is not None:
+            cmd.extend(['--round', str(round_idx)])
 
         timeout = max(t_run_sec * 20 + 120, 300)
 
@@ -262,7 +276,8 @@ def _run_all_trials(t_run_sec, n_run, experiment_name, logger):
 
 
 def run_single_benchmark(t_run_sec, n_run, experiment, logger,
-                         run_idx=None, total_runs=None):
+                         run_idx=None, total_runs=None,
+                         run_label=None, round_idx=None):
     """Run a NEST GPU benchmark by spawning one subprocess per trial.
 
     If any trial fails, the entire run is discarded and retried from scratch
@@ -290,6 +305,10 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
         logger.log_raw("=" * 80)
         logger.log(f"Device: GPU (NEST GPU, user_m1 neuron)")
         logger.log(f"Experiment: {exp_name}")
+        if run_label:
+            logger.log(f"Run label: {run_label}")
+        if round_idx is not None:
+            logger.log(f"Round: {round_idx}")
         logger.log(
             f"Each trial runs in a separate subprocess (NEST GPU limitation)"
         )
@@ -299,6 +318,8 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
         try:
             trial_results = _run_all_trials(
                 t_run_sec, n_run, experiment_name, logger,
+                run_label=run_label,
+                round_idx=round_idx,
             )
         except _TrialError as e:
             last_error = str(e)
@@ -379,7 +400,8 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
             dfs = [pd.read_parquet(p) for p in trial_parquets]
             combined = pd.concat(dfs, ignore_index=True)
             combined['exp_name'] = exp_name
-            combined_path = path_res / f'{exp_name}.parquet'
+            combined_path = get_spike_output_path(exp_name, run_label, round_idx)
+            combined_path.parent.mkdir(parents=True, exist_ok=True)
             combined.to_parquet(combined_path, compression='brotli')
             for p in trial_parquets:
                 Path(p).unlink(missing_ok=True)
@@ -392,6 +414,12 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
             'n_spikes': total_spikes,
             'status': 'success',
             'timings': timings,
+            'backend_key': 'nestgpu',
+            'experiment_name': experiment['name'],
+            'experiment_key': experiment['key'],
+            'run_label': run_label or '',
+            'round': round_idx or '',
+            'spike_path': str(combined_path) if trial_parquets else '',
         }
 
     # All retries exhausted — record in CSV and halt the process
@@ -408,6 +436,11 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
             'total_elapsed': time() - t_all_start,
             'device_build': 0.0,
         },
+        'backend_key': 'nestgpu',
+        'experiment_name': experiment['name'],
+        'experiment_key': experiment['key'],
+        'run_label': run_label or '',
+        'round': round_idx or '',
     }
     save_result_csv('NEST GPU', result)
     logger.log(f"FATAL: {error_msg}")
@@ -416,7 +449,8 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
 
 
 def run_all_benchmarks(t_run_values=None, n_run_values=None,
-                       experiment=None, logger=None):
+                       experiment=None, logger=None,
+                       run_label=None, round_idx=None):
     """
     Run all NEST GPU benchmark combinations.
 
@@ -449,6 +483,10 @@ def run_all_benchmarks(t_run_values=None, n_run_values=None,
     logger.log(f"Device: GPU (NEST GPU, custom user_m1 neuron)")
     logger.log(f"t_run values: {t_run_values} seconds")
     logger.log(f"n_run values: {n_run_values}")
+    if run_label:
+        logger.log(f"Run label: {run_label}")
+    if round_idx is not None:
+        logger.log(f"Round: {round_idx}")
     logger.log(f"Total benchmarks: {total_runs}")
     logger.log_raw("=" * 80)
 
@@ -462,6 +500,8 @@ def run_all_benchmarks(t_run_values=None, n_run_values=None,
             logger=logger,
             run_idx=run_idx,
             total_runs=total_runs,
+            run_label=run_label,
+            round_idx=round_idx,
         )
         all_results.append(result)
         save_result_csv(backend_name, result)
@@ -484,7 +524,21 @@ if __name__ == '__main__':
             exp_idx = sys.argv.index('--experiment')
             if exp_idx + 1 < len(sys.argv):
                 exp_name = sys.argv[exp_idx + 1]
-        result = _run_worker_trial(t_run_sec, trial_num, exp_name)
+        run_label = None
+        if '--run-label' in sys.argv:
+            run_idx = sys.argv.index('--run-label')
+            if run_idx + 1 < len(sys.argv):
+                run_label = sys.argv[run_idx + 1]
+        round_idx = None
+        if '--round' in sys.argv:
+            round_arg_idx = sys.argv.index('--round')
+            if round_arg_idx + 1 < len(sys.argv):
+                round_idx = int(sys.argv[round_arg_idx + 1])
+        result = _run_worker_trial(
+            t_run_sec, trial_num, exp_name,
+            run_label=run_label,
+            round_idx=round_idx,
+        )
         print(json.dumps(result), flush=True)
     else:
         print("This module is used as a worker subprocess by the benchmark system.")
