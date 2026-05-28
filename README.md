@@ -61,6 +61,7 @@ outputs like:
 ```text
 data/results/nature_2026_05/
 ├── manifest.csv
+├── checksums.sha256
 ├── round_01/
 │   ├── brian2cpp_t1.0s_n1.parquet
 │   ├── brian2cuda_t1.0s_n1.parquet
@@ -72,6 +73,21 @@ data/results/nature_2026_05/
 Each spike parquet has one row per spike. The canonical timing column for new
 exports is `time_ms`, with `trial`, `neuron_index`, `flywire_id`, and `exp_name`.
 The legacy `t` column is kept for existing analysis scripts.
+
+The full `nature_2026_05` spike parquet bundle is too large for regular Git
+tracking, so parquet files are intentionally gitignored. The committed metadata
+files are `manifest.csv` and `checksums.sha256`; the full bundle is stored in
+Google Drive:
+
+https://drive.google.com/drive/folders/1jiSfb5lNfm9gwP0YyyRz5ATIrDpBAcjs
+
+After downloading the Drive folder into `data/results/nature_2026_05/`, verify
+the bundle with:
+
+```bash
+cd data/results/nature_2026_05
+sha256sum -c checksums.sha256
+```
 
 ### Ground truth comparison
 
