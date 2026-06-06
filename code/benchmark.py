@@ -252,20 +252,21 @@ def _save_manifest_csv(result, row):
             for existing in reader:
                 existing_rows.append(existing)
 
-    key = (
-        manifest_row['framework'],
-        manifest_row['n_run'],
-        manifest_row['t_run'],
-        manifest_row['round'],
-    )
+    def manifest_key(values):
+        return (
+            str(values.get('run_label', '')),
+            str(values.get('framework', '')),
+            str(values.get('backend_key', '')),
+            str(values.get('experiment_key', '')),
+            str(values.get('n_run', '')),
+            str(values.get('t_run', '')),
+            str(values.get('round', '')),
+        )
+
+    key = manifest_key(manifest_row)
     updated = False
     for i, existing in enumerate(existing_rows):
-        existing_key = (
-            existing.get('framework', ''),
-            existing.get('n_run', ''),
-            existing.get('t_run', ''),
-            existing.get('round', ''),
-        )
+        existing_key = manifest_key(existing)
         if existing_key == key:
             existing_rows[i] = manifest_row
             updated = True
