@@ -8,6 +8,7 @@ dependencies:
   - pip:
     - --extra-index-url https://download.pytorch.org/whl/cu126
     - brian2cuda==1.0a7
+    - https://github.com/genn-team/genn/archive/refs/tags/5.4.0.zip
     - torch
     - tqdm
   - numpy=1.26.4

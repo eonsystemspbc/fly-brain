@@ -27,11 +27,12 @@ The entrypoint is [main.py](main.py), which parses CLI arguments and calls
 [code/benchmark.py](code/benchmark.py) -- the central orchestrator that dispatches
 to framework-specific runners:
 [run_brian2_cuda.py](code/run_brian2_cuda.py),
-[run_pytorch.py](code/run_pytorch.py), and
-[run_nestgpu.py](code/run_nestgpu.py).
+[run_pytorch.py](code/run_pytorch.py),
+[run_nestgpu.py](code/run_nestgpu.py), and
+[run_genn.py](code/run_genn.py).
 
 ```bash
-# Run all 4 frameworks with default durations (0.1s–1000s) and trials (1,4,8,16,32)
+# Run all 5 frameworks with default durations (0.1s–1000s) and trials (1,4,8,16,32)
 python main.py
 
 # Specific durations and trial count
@@ -39,12 +40,13 @@ python main.py --t_run 0.1 1 10 --n_run 1
 
 # Single framework
 python main.py --nestgpu --t_run 1 --n_run 1
+python main.py --genn --t_run 1 --n_run 1
 
 # Combine frameworks
 python main.py --brian2-cpu --pytorch --t_run 0.1 1 --n_run 1 4 8 16 32
 
 # Five-round Nature-paper benchmark suite
-# Uses the March grid: t_run=(0.1,1,10,100), n_run=(1,4,8,16,32), all 4 backends
+# Uses the March grid: t_run=(0.1,1,10,100), n_run=(1,4,8,16,32), all 5 backends
 python main.py --paper --run-label nature_2026_05
 ```
 
@@ -54,9 +56,11 @@ and simulation time (the always-on cost). For repeated paper runs, the CSV keeps
 the original March rows and appends new rows keyed by `run_label` and `round`;
 the corresponding spike parquet path is recorded in `spike_path`.
 
-Spike timing exports are written after the benchmarked simulation section so
-file I/O does not contaminate `sim_time`. A labeled paper run writes partitioned
-outputs like:
+Spike timing exports are written to parquet outside the timed simulation section
+so file I/O does not contaminate `sim_time`. GeNN additionally flushes bounded
+on-device spike-recording windows during long batched runs; that transfer time
+is tracked as result collection rather than simulation time. A labeled paper run
+writes partitioned outputs like:
 
 ```text
 data/results/nature_2026_05/
@@ -66,7 +70,8 @@ data/results/nature_2026_05/
 │   ├── brian2cpp_t1.0s_n1.parquet
 │   ├── brian2cuda_t1.0s_n1.parquet
 │   ├── pytorch_t1.0s_n1.parquet
-│   └── nestgpu_t1.0s_n1.parquet
+│   ├── nestgpu_t1.0s_n1.parquet
+│   └── genn_t1.0s_n1.parquet
 └── round_02/
 ```
 
@@ -109,17 +114,60 @@ This computes active-neuron overlap (Jaccard), per-neuron firing-rate
 correlation, and spike-count ratios, and writes structured results to
 `data/ground-truth-comparison.json`.
 
+For all-framework pairwise comparisons, including firing-rate parity rows and
+spike-time matches within a tolerance window, use:
+
+```bash
+python code/compare_spike_outputs.py \
+  --run-label nature_2026_05 \
+  --round 1 \
+  --output-dir data/results/nature_2026_05/comparisons
+```
+
+This writes `pairwise_summary.csv`, `pairwise_summary.json`,
+`parity_rates.csv`, and `missing_inputs.json`. The pairwise summary has one row
+per framework pair and `t_run`/`n_run` combination.
+
 ## Installation
 
 ### Conda environment
 
 The `brain-fly` conda environment provides everything needed to run the
-**Brian2**, **Brian2CUDA**, and **PyTorch** backends (including CUDA-enabled
-PyTorch):
+**Brian2**, **Brian2CUDA**, **PyTorch**, and **GeNN** backends (including
+CUDA-enabled PyTorch and PyGeNN):
 
 ```bash
 conda env create -f environment.yml
 conda activate brain-fly
+```
+
+On Ubuntu/WSL, PyGeNN's source build also needs the system `pkg-config` binary
+and libffi headers:
+
+```bash
+sudo apt-get install -y pkg-config libffi-dev
+```
+
+### GeNN
+
+The `--genn` backend uses PyGeNN 5.4.0 with the CUDA backend. It implements
+Brian2-style Poisson activation into membrane voltage, delayed sparse recurrent
+synapses, GeNN batching for `n_run`, and the same parquet spike schema as the
+other benchmark runners.
+
+Large batched GeNN runs cap the on-device spike recording buffer with
+`GENN_RECORDING_WINDOW_MAX_SLOTS` (default: `800000`). This preserves full spike
+timing exports while avoiding CUDA out-of-memory errors for large
+`n_run * t_run` combinations.
+
+If PyGeNN was not installed when the conda environment was created, install it
+inside `brain-fly` with:
+
+```bash
+export CUDA_PATH=/usr/local/cuda-12.5
+export CUDA_HOME=$CUDA_PATH
+export PATH=$CUDA_PATH/bin:$PATH
+pip install https://github.com/genn-team/genn/archive/refs/tags/5.4.0.zip
 ```
 
 ### NEST GPU
@@ -174,8 +222,9 @@ For a full setup from a fresh Windows machine (WSL2 + CUDA + Miniconda), see
 | **Brian2CUDA** | CUDA standalone (GPU) | ready |
 | **PyTorch** | CUDA (GPU) | ready |
 | **NEST GPU** | CUDA (GPU, custom `user_m1` neuron) | ready |
+| **GeNN** | CUDA (GPU, PyGeNN 5.4.0) | ready |
 
-All four frameworks share the same data, model parameters, and folder structure.
+All five frameworks share the same data, model parameters, and folder structure.
 A single conda environment (`brain-fly`) plus a system-level NEST GPU install
 runs everything.
 
@@ -194,7 +243,8 @@ python main.py --brian2-cpu                    # Brian2 CPU only
 python main.py --brian2cuda-gpu               # Brian2CUDA GPU only
 python main.py --pytorch                      # PyTorch only
 python main.py --nestgpu                      # NEST GPU only
-python main.py --pytorch --nestgpu            # PyTorch + NEST GPU
+python main.py --genn                         # GeNN only
+python main.py --pytorch --genn               # PyTorch + GeNN
 
 # Full benchmark suite (all durations, n_run=1,4,8,16,32, all backends)
 python main.py
@@ -207,11 +257,12 @@ python main.py --paper --run-label nature_2026_05
 
 | Flag | Description |
 |---|---|
-| *(default)* | Run all: Brian2 (CPU) → Brian2CUDA (GPU) → PyTorch → NEST GPU |
+| *(default)* | Run all: Brian2 (CPU) → Brian2CUDA (GPU) → PyTorch → NEST GPU → GeNN |
 | `--brian2-cpu` | Brian2 C++ standalone (CPU) only |
 | `--brian2cuda-gpu` | Brian2CUDA (GPU) only |
 | `--pytorch` | PyTorch (GPU/CPU) only |
 | `--nestgpu` | NEST GPU only |
+| `--genn` | GeNN CUDA backend only |
 | `--t_run` | Simulation duration(s) in seconds, e.g. `--t_run 0.1 1 10` |
 | `--n_run` | Number of independent trials, e.g. `--n_run 1 4 8 16 32` |
 | `--paper` | Run the paper suite: `t_run=[0.1,1,10,100]`, `n_run=[1,4,8,16,32]`, 5 rounds |
@@ -234,6 +285,7 @@ fly-brain/
 │   ├── run_brian2_cuda.py      # Brian2 / Brian2CUDA benchmark runner
 │   ├── run_pytorch.py          # PyTorch benchmark runner (model + utils)
 │   ├── run_nestgpu.py          # NEST GPU benchmark runner (subprocess per trial)
+│   ├── run_genn.py             # GeNN/PyGeNN benchmark runner
 │   ├── compare_ground_truth.py # Compare backends against Brian2 (CPU) ground truth
 │   └── paper-brian2/           # Original paper code (not used by benchmarks)
 │       ├── model.py            # Core LIF network model (Brian2)

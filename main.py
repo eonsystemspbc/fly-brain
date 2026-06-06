@@ -16,6 +16,7 @@ Usage:
     python main.py --brian2cuda-gpu                      # Brian2CUDA GPU only
     python main.py --pytorch                             # PyTorch only
     python main.py --nestgpu                             # NEST GPU only
+    python main.py --genn                                # GeNN only
     python main.py --brian2-cpu --pytorch --nestgpu      # Brian2 CPU + PyTorch + NEST GPU
 
     # Nature-paper suite: 5 rounds, March parameter grid (0.1s,1s,10s,100s)
@@ -85,12 +86,17 @@ def main():
                         help='Run PyTorch benchmark')
     parser.add_argument('--nestgpu', action='store_true',
                         help='Run NEST GPU benchmark')
+    parser.add_argument('--genn', action='store_true',
+                        help='Run GeNN benchmark')
 
     args = parser.parse_args()
 
     # If no backend flags specified, run all
-    if not (args.brian2_cpu or args.brian2cuda_gpu or args.pytorch or args.nestgpu):
-        backends = ['cpu', 'gpu', 'pytorch', 'nestgpu']
+    if not (
+        args.brian2_cpu or args.brian2cuda_gpu
+        or args.pytorch or args.nestgpu or args.genn
+    ):
+        backends = ['cpu', 'gpu', 'pytorch', 'nestgpu', 'genn']
     else:
         backends = []
         if args.brian2_cpu:
@@ -101,6 +107,8 @@ def main():
             backends.append('pytorch')
         if args.nestgpu:
             backends.append('nestgpu')
+        if args.genn:
+            backends.append('genn')
 
     # Import brian2cuda once to register the cuda_standalone device
     if 'gpu' in backends:

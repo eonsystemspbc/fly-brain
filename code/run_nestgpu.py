@@ -14,6 +14,7 @@ Called by benchmark.py orchestrator.
 import subprocess
 import json
 import sys
+import ctypes
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -107,12 +108,14 @@ def _run_worker_trial(t_run_sec, trial_num, experiment_name=None,
         i_pre = np.array(df_con['Presynaptic_Index'].values).tolist()
         i_post = np.array(df_con['Postsynaptic_Index'].values).tolist()
         conn_w = np.array(
-            df_con['Excitatory x Connectivity'].values * params['w_syn']
+            df_con['Excitatory x Connectivity'].values * params['w_syn'],
+            dtype=np.float32,
         ).tolist()
+        conn_w_arr = (ctypes.c_float * len(conn_w))(*conn_w)
 
         conn_spec = {'rule': 'one_to_one'}
         syn_spec = {
-            'weight': {'array': conn_w},
+            'weight': {'array': conn_w_arr},
             'delay': params['t_dly'],
             'receptor': 0,
         }
