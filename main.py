@@ -2,7 +2,7 @@
 Drosophila brain model benchmark runner.
 
 Usage:
-    # All backends, default experiment (Sugar GRNs 200 Hz)
+    # Core backends in the main brain-fly environment
     python main.py
 
     # P9 forward-walking experiment instead
@@ -17,7 +17,11 @@ Usage:
     python main.py --pytorch                             # PyTorch only
     python main.py --nestgpu                             # NEST GPU only
     python main.py --genn                                # GeNN only
+    python main.py --brian2genn                          # Brian2GeNN GPU only
     python main.py --brian2-cpu --pytorch --nestgpu      # Brian2 CPU + PyTorch + NEST GPU
+
+    # Brian2GeNN uses a separate environment because it pins Brian2<2.6
+    python main.py --brian2genn --paper --run-label nature_2026_05
 
     # Nature-paper suite: 5 rounds, March parameter grid (0.1s,1s,10s,100s)
     python main.py --paper --run-label nature_2026_05
@@ -88,13 +92,17 @@ def main():
                         help='Run NEST GPU benchmark')
     parser.add_argument('--genn', action='store_true',
                         help='Run GeNN benchmark')
+    parser.add_argument('--brian2genn', action='store_true',
+                        help='Run Brian2GeNN benchmark')
 
     args = parser.parse_args()
 
-    # If no backend flags specified, run all
+    # If no backend flags specified, run the backends available in the main
+    # brain-fly environment. Brian2GeNN is explicit because it requires a
+    # separate Brian2<2.6 environment that conflicts with Brian2CUDA.
     if not (
         args.brian2_cpu or args.brian2cuda_gpu
-        or args.pytorch or args.nestgpu or args.genn
+        or args.pytorch or args.nestgpu or args.genn or args.brian2genn
     ):
         backends = ['cpu', 'gpu', 'pytorch', 'nestgpu', 'genn']
     else:
@@ -109,6 +117,8 @@ def main():
             backends.append('nestgpu')
         if args.genn:
             backends.append('genn')
+        if args.brian2genn:
+            backends.append('brian2genn')
 
     # Import brian2cuda once to register the cuda_standalone device
     if 'gpu' in backends:

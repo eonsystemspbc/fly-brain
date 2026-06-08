@@ -35,6 +35,7 @@ BACKENDS = {
     'pytorch':    'PyTorch (CUDA)',
     'nestgpu':    'NEST GPU',
     'genn':       'GeNN (GPU)',
+    'brian2genn': 'Brian2GeNN (GPU)',
 }
 
 GROUND_TRUTH_KEY = 'brian2cpp'
