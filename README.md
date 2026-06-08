@@ -29,10 +29,14 @@ to framework-specific runners:
 [run_brian2_cuda.py](code/run_brian2_cuda.py),
 [run_pytorch.py](code/run_pytorch.py),
 [run_nestgpu.py](code/run_nestgpu.py), and
-[run_genn.py](code/run_genn.py).
+[run_genn.py](code/run_genn.py). The optional Brian2GeNN backend lives in
+[run_brian2_genn.py](code/run_brian2_genn.py) and uses a separate conda
+environment because Brian2GeNN 1.7.0 pins Brian2<2.6 while Brian2CUDA uses
+Brian2 2.8.0.
 
 ```bash
-# Run all 5 frameworks with default durations (0.1s–1000s) and trials (1,4,8,16,32)
+# Run the 5 main-environment frameworks with default durations (0.1s–1000s)
+# and trials (1,4,8,16,32)
 python main.py
 
 # Specific durations and trial count
@@ -41,13 +45,17 @@ python main.py --t_run 0.1 1 10 --n_run 1
 # Single framework
 python main.py --nestgpu --t_run 1 --n_run 1
 python main.py --genn --t_run 1 --n_run 1
+python main.py --brian2genn --t_run 1 --n_run 1
 
 # Combine frameworks
 python main.py --brian2-cpu --pytorch --t_run 0.1 1 --n_run 1 4 8 16 32
 
 # Five-round Nature-paper benchmark suite
-# Uses the March grid: t_run=(0.1,1,10,100), n_run=(1,4,8,16,32), all 5 backends
+# Uses the March grid: t_run=(0.1,1,10,100), n_run=(1,4,8,16,32), 5 core backends
 python main.py --paper --run-label nature_2026_05
+
+# Add Brian2GeNN as the 6th framework from the brain-fly-brian2genn environment
+python main.py --brian2genn --paper --run-label nature_2026_05
 ```
 
 Results are incrementally saved to `data/benchmark-results.csv` as each
@@ -71,7 +79,8 @@ data/results/nature_2026_05/
 │   ├── brian2cuda_t1.0s_n1.parquet
 │   ├── pytorch_t1.0s_n1.parquet
 │   ├── nestgpu_t1.0s_n1.parquet
-│   └── genn_t1.0s_n1.parquet
+│   ├── genn_t1.0s_n1.parquet
+│   └── brian2genn_t1.0s_n1.parquet
 └── round_02/
 ```
 
@@ -128,13 +137,29 @@ This writes `pairwise_summary.csv`, `pairwise_summary.json`,
 `parity_rates.csv`, and `missing_inputs.json`. The pairwise summary has one row
 per framework pair and `t_run`/`n_run` combination.
 
+For paper-support parity files comparing one backend against Brian2 CPU across
+all five labeled rounds, use:
+
+```bash
+python code/compare_backend_to_brian2.py \
+  --run-label nature_2026_05 \
+  --backend brian2genn \
+  --output-dir data/results/nature_2026_05/comparisons
+```
+
+This writes `<backend>_vs_brian2_rate_summary.csv/json`,
+`<backend>_vs_brian2_rate_parity.csv`, and
+`<backend>_vs_brian2_missing_inputs.json`. Add `--include-timing` only for
+smaller targeted checks where greedy spike-time matching is scientifically
+useful and computationally reasonable.
+
 ## Installation
 
 ### Conda environment
 
 The `brain-fly` conda environment provides everything needed to run the
-**Brian2**, **Brian2CUDA**, **PyTorch**, and **GeNN** backends (including
-CUDA-enabled PyTorch and PyGeNN):
+**Brian2**, **Brian2CUDA**, **PyTorch**, **NEST GPU**, and **GeNN** backends
+(including CUDA-enabled PyTorch and PyGeNN):
 
 ```bash
 conda env create -f environment.yml
@@ -169,6 +194,42 @@ export CUDA_HOME=$CUDA_PATH
 export PATH=$CUDA_PATH/bin:$PATH
 pip install https://github.com/genn-team/genn/archive/refs/tags/5.4.0.zip
 ```
+
+### Brian2GeNN
+
+The `--brian2genn` backend uses Brian2GeNN 1.7.0 as a Brian2 standalone device
+targeting GeNN/CUDA. It is intentionally isolated from the main `brain-fly`
+environment because Brian2GeNN pins Brian2<2.6, which conflicts with
+Brian2CUDA's Brian2 2.8.0 requirement.
+
+Create the environment with:
+
+```bash
+conda env create -f environment-brian2genn.yml
+conda activate brain-fly-brian2genn
+```
+
+Brian2GeNN 1.7.0 expects GeNN 4.x command-line scripts such as
+`genn-buildmodel.sh`. If they are not already installed, place GeNN 4.9.0 at
+`~/.local/src/genn-4.9.0` or set `BRIAN2GENN_GENN_PATH`/`GENN_PATH` to your
+GeNN 4.x source tree:
+
+```bash
+export CUDA_PATH=/usr/local/cuda-12.5
+export CUDA_HOME=$CUDA_PATH
+export BRIAN2GENN_GENN_PATH=$HOME/.local/src/genn-4.9.0
+export GENN_PATH=$BRIAN2GENN_GENN_PATH
+export PATH=$GENN_PATH/bin:$CUDA_PATH/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_PATH/lib64:$LD_LIBRARY_PATH
+```
+
+For scientific comparability, the Brian2GeNN runner exports the same per-spike
+parquet schema as the other backends and uses the same upstream Poisson drive.
+Brian2GeNN cannot run this model's independent trials as a true GeNN batch in
+the way the direct `--genn` backend can, so `n_run>1` is implemented as
+independent build/run trials with deterministic per-trial C RNG seeds. The
+`sim_time` column records GeNN executable time; `build_time` records the
+Brian2GeNN code generation/compilation overhead.
 
 ### NEST GPU
 
@@ -223,10 +284,12 @@ For a full setup from a fresh Windows machine (WSL2 + CUDA + Miniconda), see
 | **PyTorch** | CUDA (GPU) | ready |
 | **NEST GPU** | CUDA (GPU, custom `user_m1` neuron) | ready |
 | **GeNN** | CUDA (GPU, PyGeNN 5.4.0) | ready |
+| **Brian2GeNN** | Brian2GeNN 1.7.0 / GeNN CUDA | ready, separate env |
 
-All five frameworks share the same data, model parameters, and folder structure.
-A single conda environment (`brain-fly`) plus a system-level NEST GPU install
-runs everything.
+All six frameworks share the same data, model parameters, spike-output schema,
+and folder structure. The five main backends run from `brain-fly` plus a
+system-level NEST GPU install; Brian2GeNN runs from `brain-fly-brian2genn`
+because of its Brian2 version pin.
 
 ## Quickstart
 
@@ -235,7 +298,7 @@ runs everything.
 conda env create -f environment.yml
 conda activate brain-fly
 
-# Run a 1-second benchmark on all backends
+# Run a 1-second benchmark on the five main-environment backends
 python main.py --t_run 1 --n_run 1 --no_log_file
 
 # Specific backends (combinable)
@@ -244,13 +307,17 @@ python main.py --brian2cuda-gpu               # Brian2CUDA GPU only
 python main.py --pytorch                      # PyTorch only
 python main.py --nestgpu                      # NEST GPU only
 python main.py --genn                         # GeNN only
+python main.py --brian2genn                   # Brian2GeNN only, from brain-fly-brian2genn
 python main.py --pytorch --genn               # PyTorch + GeNN
 
-# Full benchmark suite (all durations, n_run=1,4,8,16,32, all backends)
+# Full benchmark suite (all durations, n_run=1,4,8,16,32, five main backends)
 python main.py
 
-# Nature-paper suite: all backends, March parameter grid, 5 rounds
+# Nature-paper suite: five main backends, March parameter grid, 5 rounds
 python main.py --paper --run-label nature_2026_05
+
+# Brian2GeNN Nature-paper add-on from the separate brain-fly-brian2genn env
+python main.py --brian2genn --paper --run-label nature_2026_05
 ```
 
 ### `main.py` options
@@ -263,6 +330,7 @@ python main.py --paper --run-label nature_2026_05
 | `--pytorch` | PyTorch (GPU/CPU) only |
 | `--nestgpu` | NEST GPU only |
 | `--genn` | GeNN CUDA backend only |
+| `--brian2genn` | Brian2GeNN backend only; use the `brain-fly-brian2genn` environment |
 | `--t_run` | Simulation duration(s) in seconds, e.g. `--t_run 0.1 1 10` |
 | `--n_run` | Number of independent trials, e.g. `--n_run 1 4 8 16 32` |
 | `--paper` | Run the paper suite: `t_run=[0.1,1,10,100]`, `n_run=[1,4,8,16,32]`, 5 rounds |
@@ -280,6 +348,7 @@ Backend flags are combinable: `--brian2-cpu --pytorch` runs Brian2 CPU then PyTo
 fly-brain/
 ├── main.py                     # Entrypoint (benchmark runner CLI)
 ├── environment.yml             # Conda env definition (brain-fly)
+├── environment-brian2genn.yml  # Separate Brian2GeNN env definition
 ├── code/
 │   ├── benchmark.py            # Orchestrator: config, logging, dispatcher
 │   ├── run_brian2_cuda.py      # Brian2 / Brian2CUDA benchmark runner

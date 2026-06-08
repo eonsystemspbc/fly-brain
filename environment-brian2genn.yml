@@ -1,0 +1,15 @@
+name: brain-fly-brian2genn
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy=1.26.4
+  - pandas
+  - pyarrow
+  - scipy
+  - matplotlib
+  - pip:
+    - brian2genn==1.7.0
+    - https://github.com/genn-team/genn/archive/refs/tags/5.4.0.zip
