@@ -16,3 +16,6 @@ data/results/nature_2026_05/*.pid
 # PyTorch cached weight matrices (generated from connectivity data)
 data/weight_coo.pkl
 data/weight_csr.pkl
+
+# Virtual Environment
+.venv/*
