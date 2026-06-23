@@ -113,11 +113,19 @@ class LIFNeuron(nn.Module):
         spikes = torch.zeros(self.batch, self.size, device=self.device)
         return spikes, v
 
-    def forward(self, input_current, v):
-        v = v + self.time_factor * (input_current - (v - self.v_rest))
+    def forward(self, conductance, voltage_stim, v):
+        # Brian/GeNN:
+        # V += Vstim
+        # V += MemFactor * (G - (V - Vrest))
+
+        v = v + voltage_stim
+        v = v + self.time_factor * (conductance - (v - self.v_rest))
+
         spike = self.spike_gradient(v - self.v_threshold)
+
         reset = ((v - self.v_reset) * spike).detach()
         v = v - reset
+
         return spike, v
 
     @staticmethod
@@ -151,13 +159,28 @@ class AlphaLIF(nn.Module):
         refrac = self.steps_refrac + torch.zeros_like(v)
         return conductance, delay_buffer, spikes, v, refrac
 
-    def forward(self, input_, conductance, delay_buffer, spikes, v, refrac):
+    def forward(self,
+            recurrent_input,
+            voltage_stim,
+            conductance,
+            delay_buffer,
+            spikes,
+            v,
+            refrac):
         refrac = refrac * (1 - spikes)
         refrac = refrac + 1
         conductance_new, delay_buffer = self.synapse(
-            input_, conductance, delay_buffer, (refrac > self.steps_refrac).float()
+            recurrent_input,
+            conductance,
+            delay_buffer,
+            (refrac > self.steps_refrac).float()
         )
-        spikes, v_new = self.neuron(conductance, v)
+
+        spikes, v_new = self.neuron(
+            conductance,
+            voltage_stim,
+            v
+        )
         conductance_reset = (conductance_new * spikes).detach()
         conductance_new = conductance_new - conductance_reset
         return conductance_new, delay_buffer, spikes, v_new, refrac
@@ -182,11 +205,28 @@ class TorchModel(nn.Module):
         return self.neurons.state_init()
 
     def forward(self, rates, conductance, delay_buffer, spikes, v, refrac, generator=None):
-        spikes_input = self.poisson(rates, generator=generator)
-        weighted_spikes = torch.matmul(spikes, self.weights.transpose(0, 1))
+        poisson_spikes = self.poisson(
+            rates,
+            generator=generator
+        )
+
+        voltage_stim = self.scale * poisson_spikes
+
+        weighted_spikes = torch.matmul(
+            spikes,
+            self.weights.transpose(0, 1)
+        )
+
+        recurrent_input = self.scale * weighted_spikes
+
         conductance, delay_buffer, spikes, v, refrac = self.neurons(
-            self.scale * (spikes_input + weighted_spikes),
-            conductance, delay_buffer, spikes, v, refrac,
+            recurrent_input,
+            voltage_stim,
+            conductance,
+            delay_buffer,
+            spikes,
+            v,
+            refrac,
         )
         return conductance, delay_buffer, spikes, v, refrac
 
