@@ -7,6 +7,7 @@ to framework-specific runners:
   - run_pytorch.py      (PyTorch)
   - run_nestgpu.py      (NEST GPU)
   - run_genn.py         (GeNN)
+  - run_brian2_genn.py  (Brian2GeNN)
 
 Entrypoint is in main.py at the project root.
 """
@@ -252,20 +253,21 @@ def _save_manifest_csv(result, row):
             for existing in reader:
                 existing_rows.append(existing)
 
-    key = (
-        manifest_row['framework'],
-        manifest_row['n_run'],
-        manifest_row['t_run'],
-        manifest_row['round'],
-    )
+    def manifest_key(values):
+        return (
+            str(values.get('run_label', '')),
+            str(values.get('framework', '')),
+            str(values.get('backend_key', '')),
+            str(values.get('experiment_key', '')),
+            str(values.get('n_run', '')),
+            str(values.get('t_run', '')),
+            str(values.get('round', '')),
+        )
+
+    key = manifest_key(manifest_row)
     updated = False
     for i, existing in enumerate(existing_rows):
-        existing_key = (
-            existing.get('framework', ''),
-            existing.get('n_run', ''),
-            existing.get('t_run', ''),
-            existing.get('round', ''),
-        )
+        existing_key = manifest_key(existing)
         if existing_key == key:
             existing_rows[i] = manifest_row
             updated = True
@@ -398,6 +400,7 @@ BACKEND_NAMES = {
     'pytorch': 'PyTorch',
     'nestgpu': 'NEST GPU',
     'genn': 'GeNN (GPU)',
+    'brian2genn': 'Brian2GeNN (GPU)',
 }
 
 
@@ -409,7 +412,7 @@ def run_benchmarks(backends, t_run_values=None, n_run_values=None,
 
     Args:
         backends: list of backend keys
-            ('cpu', 'gpu', 'pytorch', 'nestgpu', 'genn')
+            ('cpu', 'gpu', 'pytorch', 'nestgpu', 'genn', 'brian2genn')
         t_run_values: list of t_run durations in seconds, or None for all
         n_run_values: list of n_run values, or None for N_RUN_VALUES
         experiment: experiment config dict from get_experiment()
@@ -499,6 +502,18 @@ def run_benchmarks(backends, t_run_values=None, n_run_values=None,
             elif backend == 'genn':
                 from run_genn import run_all_benchmarks as run_genn
                 results = run_genn(
+                    t_run_values=t_run_values,
+                    n_run_values=n_run_values,
+                    experiment=experiment,
+                    logger=logger,
+                    run_label=run_label,
+                    round_idx=round_label,
+                )
+                all_results.setdefault(backend, []).extend(results)
+
+            elif backend == 'brian2genn':
+                from run_brian2_genn import run_all_benchmarks as run_brian2genn
+                results = run_brian2genn(
                     t_run_values=t_run_values,
                     n_run_values=n_run_values,
                     experiment=experiment,

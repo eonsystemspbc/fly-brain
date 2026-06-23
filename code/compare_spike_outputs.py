@@ -32,6 +32,7 @@ FRAMEWORKS = {
     'pytorch': 'PyTorch (CUDA)',
     'nestgpu': 'NEST GPU',
     'genn': 'GeNN (GPU)',
+    'brian2genn': 'Brian2GeNN (GPU)',
 }
 
 DEFAULT_T_RUN = [0.1, 1.0, 10.0, 100.0]

@@ -196,7 +196,6 @@ def _create_genn_models(create_neuron_model):
         }
         else {
             RefracTime -= dt;
-            G += Isyn;
         }
         """,
         threshold_condition_code='RefracTime <= 0.0 && V > Vthresh',
