@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / 'code'))
 from benchmark import (
     BenchmarkLogger, T_RUN_VALUES_SEC, PAPER_T_RUN_VALUES_SEC,
     N_RUN_VALUES, PAPER_ROUNDS, BACKEND_NAMES, EXPERIMENTS,
-    get_experiment, run_benchmarks,
+    SPIKE_IO_ENV_VAR, get_experiment, run_benchmarks, spike_io_enabled,
 )
 
 
@@ -75,6 +75,10 @@ def main():
                         help='Log file path. Default: data/results/benchmarks.log')
     parser.add_argument('--no_log_file', action='store_true',
                         help='Disable file logging (console only)')
+    parser.add_argument('--disable-spike-io', '--disable_spike_io',
+                        action='store_true',
+                        help='Disable spike probing/recording and spike parquet '
+                             'output for timing-only benchmarks')
 
     parser.add_argument('--experiment', type=str, default=None,
                         choices=list(EXPERIMENTS.keys()),
@@ -96,6 +100,9 @@ def main():
                         help='Run Brian2GeNN benchmark')
 
     args = parser.parse_args()
+
+    if args.disable_spike_io:
+        os.environ[SPIKE_IO_ENV_VAR] = '1'
 
     # If no backend flags specified, run the backends available in the main
     # brain-fly environment. Brian2GeNN is explicit because it requires a
@@ -170,6 +177,10 @@ def main():
         logger.log(f"round start: {args.round_start}")
         if args.run_label:
             logger.log(f"run label: {args.run_label}")
+        logger.log(
+            "spike probing/output: "
+            f"{'enabled' if spike_io_enabled() else 'disabled'}"
+        )
         logger.log(f"Log file: {log_file if log_file else 'disabled'}")
 
         run_benchmarks(

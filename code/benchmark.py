@@ -30,6 +30,13 @@ T_RUN_VALUES_SEC = [0.1, 1, 10, 100, 1000]
 PAPER_T_RUN_VALUES_SEC = [0.1, 1.0, 10.0, 100.0]
 N_RUN_VALUES = [1, 4, 8, 16, 32]
 PAPER_ROUNDS = 5
+SPIKE_IO_ENV_VAR = 'FLY_BRAIN_DISABLE_SPIKE_IO'
+
+
+def spike_io_enabled():
+    """Return False when benchmark runs should avoid spike probing/output."""
+    value = os.environ.get(SPIKE_IO_ENV_VAR, '')
+    return value.strip().lower() not in {'1', 'true', 'yes', 'on'}
 
 # ============================================================================
 # Paths and Constants
@@ -533,6 +540,9 @@ def run_benchmarks(backends, t_run_values=None, n_run_values=None,
     if csv_path.exists():
         logger.log(f"Results CSV: {csv_path}")
     if run_label:
-        logger.log(f"Spike manifest: {path_res / run_label / 'manifest.csv'}")
+        if spike_io_enabled():
+            logger.log(f"Spike manifest: {path_res / run_label / 'manifest.csv'}")
+        else:
+            logger.log("Spike outputs disabled; no spike manifest written")
 
     return all_results

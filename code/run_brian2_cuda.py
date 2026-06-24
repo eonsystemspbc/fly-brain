@@ -29,6 +29,7 @@ from benchmark import (
     T_RUN_VALUES_SEC, N_RUN_VALUES,
     output_dir, path_comp, path_con,
     get_experiment, get_spike_output_path, print_summary_table, save_result_csv,
+    spike_io_enabled,
 )
 
 # ============================================================================
@@ -69,6 +70,7 @@ def _run_trial_cpu(exc, exc2, slnc, path_comp_str, path_con_str, params):
     """
     import warnings
     warnings.filterwarnings('ignore')
+    record_spikes = spike_io_enabled()
 
     df_comp = pd.read_csv(path_comp_str, index_col=0)
     df_con = pd.read_parquet(path_con_str)
@@ -88,7 +90,7 @@ def _run_trial_cpu(exc, exc2, slnc, path_comp_str, path_con_str, params):
                 j=df_con['Postsynaptic_Index'].values)
     syn.w = df_con['Excitatory x Connectivity'].values * params['w_syn']
 
-    spk_mon = SpikeMonitor(neu)
+    spk_mon = SpikeMonitor(neu) if record_spikes else None
 
     pois = []
     for i in exc:
@@ -107,17 +109,21 @@ def _run_trial_cpu(exc, exc2, slnc, path_comp_str, path_con_str, params):
     for i in slnc:
         syn.w[' {} == i'.format(i)] = 0 * mV
 
-    net = Network(neu, syn, spk_mon, *pois)
+    net_objects = [neu, syn, *pois]
+    if spk_mon is not None:
+        net_objects.insert(2, spk_mon)
+    net = Network(*net_objects)
     net.run(duration=params['t_run'])
 
-    spk_trn = {k: v for k, v in spk_mon.spike_trains().items() if len(v)}
-    return spk_trn
+    if not record_spikes:
+        return {}
+    return {k: v for k, v in spk_mon.spike_trains().items() if len(v)}
 
 # ============================================================================
 # Standalone helpers (for GPU and CPU n_run=1)
 # ============================================================================
 
-def create_network(path_comp, path_con, params, logger=None):
+def create_network(path_comp, path_con, params, logger=None, record_spikes=True):
     """Create Brian2 network from connectivity data."""
     t_start = time()
 
@@ -145,7 +151,7 @@ def create_network(path_comp, path_con, params, logger=None):
     syn.w = df_con['Excitatory x Connectivity'].values * params['w_syn']
     t_synapses = time() - t_synapses_start
 
-    spk_mon = SpikeMonitor(neu)
+    spk_mon = SpikeMonitor(neu) if record_spikes else None
 
     timings = {
         'data_load': t_load,
@@ -188,6 +194,7 @@ def _run_standalone_benchmark(t_run_sec, n_run, use_cuda, exc, exc2, slnc,
                               i2flyid, params, logger, exp_name, timings):
     """Run benchmark using Brian2 standalone mode (C++ or CUDA)."""
     from brian2 import device as brian_device
+    record_spikes = spike_io_enabled()
 
     brian_device.reinit()
     brian_device.activate()
@@ -205,7 +212,7 @@ def _run_standalone_benchmark(t_run_sec, n_run, use_cuda, exc, exc2, slnc,
     t_network_start = time()
 
     neu, syn, spk_mon, _, network_timings = create_network(
-        path_comp, path_con, params, logger
+        path_comp, path_con, params, logger, record_spikes=record_spikes
     )
     timings.update(network_timings)
 
@@ -216,7 +223,10 @@ def _run_standalone_benchmark(t_run_sec, n_run, use_cuda, exc, exc2, slnc,
     if slnc:
         silence_neurons(syn, slnc)
 
-    net = Network(neu, syn, spk_mon, *poi_inp)
+    net_objects = [neu, syn, *poi_inp]
+    if spk_mon is not None:
+        net_objects.insert(2, spk_mon)
+    net = Network(*net_objects)
     timings['network_creation_total'] = time() - t_network_start
 
     logger.log(f"  Data loading:     {timings['data_load']:.3f}s")
@@ -255,10 +265,14 @@ def _run_standalone_benchmark(t_run_sec, n_run, use_cuda, exc, exc2, slnc,
         run_time = time() - t_run_start
         simulation_run_total += run_time
 
-        t_extract_start = time()
-        spk_trn = {k: v for k, v in spk_mon.spike_trains().items() if len(v)}
-        t_extract = time() - t_extract_start
-        spike_extraction_total += t_extract
+        if record_spikes:
+            t_extract_start = time()
+            spk_trn = {k: v for k, v in spk_mon.spike_trains().items() if len(v)}
+            t_extract = time() - t_extract_start
+            spike_extraction_total += t_extract
+        else:
+            spk_trn = {}
+            t_extract = 0.0
 
         trial_time = time() - t_trial_start
         trial_times.append(trial_time)
@@ -344,6 +358,11 @@ def run_single_benchmark(t_run_sec, n_run, use_cuda, experiment, logger,
     logger.log(f"Device: {device_location} "
                f"({'CUDA' if use_cuda else 'C++'})")
     logger.log(f"Experiment: {exp_name}")
+    record_spikes = spike_io_enabled()
+    logger.log(
+        "Spike probing/output: "
+        f"{'enabled' if record_spikes else 'disabled'}"
+    )
     if run_label:
         logger.log(f"Run label: {run_label}")
     if round_idx is not None:
@@ -383,35 +402,42 @@ def run_single_benchmark(t_run_sec, n_run, use_cuda, experiment, logger,
 
         # ===== Collect and save results =====
         logger.log("Collecting results...")
-        t_collect_start = time()
-
         ids, ts, trials = [], [], []
-        for trial_idx, spk_dict in enumerate(simulation_results):
-            for neuron_id, spike_times in spk_dict.items():
-                ids.extend([neuron_id] * len(spike_times))
-                trials.extend([trial_idx] * len(spike_times))
-                ts.extend([float(t) for t in spike_times])
+        path_save = ''
+        if record_spikes:
+            t_collect_start = time()
+            for trial_idx, spk_dict in enumerate(simulation_results):
+                for neuron_id, spike_times in spk_dict.items():
+                    ids.extend([neuron_id] * len(spike_times))
+                    trials.extend([trial_idx] * len(spike_times))
+                    ts.extend([float(t) for t in spike_times])
 
-        df = pd.DataFrame({
-            't': ts,
-            'trial': trials,
-            'neuron_index': ids,
-            'flywire_id': [i2flyid[i] for i in ids],
-            'exp_name': exp_name,
-        })
-        df.insert(1, 'time_ms', df['t'] * 1000.0)
+            df = pd.DataFrame({
+                't': ts,
+                'trial': trials,
+                'neuron_index': ids,
+                'flywire_id': [i2flyid[i] for i in ids],
+                'exp_name': exp_name,
+            })
+            df.insert(1, 'time_ms', df['t'] * 1000.0)
 
-        timings['result_collection'] = time() - t_collect_start
+            timings['result_collection'] = time() - t_collect_start
 
-        t_save_start = time()
-        path_save = get_spike_output_path(exp_name, run_label, round_idx)
-        path_save.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(path_save, compression='brotli')
-        timings['result_save'] = time() - t_save_start
+            t_save_start = time()
+            path_save = get_spike_output_path(exp_name, run_label, round_idx)
+            path_save.parent.mkdir(parents=True, exist_ok=True)
+            df.to_parquet(path_save, compression='brotli')
+            timings['result_save'] = time() - t_save_start
+        else:
+            df = pd.DataFrame()
+            timings['result_collection'] = 0.0
+            timings['result_save'] = 0.0
+            logger.log("  Spike probing/output disabled; no parquet written")
 
         logger.log(f"  Collection:       {timings['result_collection']:.3f}s")
         logger.log(f"  Save to file:     {timings['result_save']:.3f}s")
-        logger.log(f"  Output file:      {path_save}")
+        if path_save:
+            logger.log(f"  Output file:      {path_save}")
 
         # ===== Totals =====
         timings['total_elapsed'] = (

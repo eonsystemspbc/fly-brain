@@ -26,6 +26,7 @@ from benchmark import (
     T_RUN_VALUES_SEC, N_RUN_VALUES,
     path_comp, path_con, path_wt,
     get_experiment, get_spike_output_path, print_summary_table, save_result_csv,
+    spike_io_enabled,
 )
 
 # ============================================================================
@@ -270,6 +271,11 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
     logger.log(f"Device: {device_name.upper()}")
     logger.log(f"Steps: {num_steps} (dt={DT}ms)")
     logger.log(f"Experiment: {exp_name}")
+    record_spikes = spike_io_enabled()
+    logger.log(
+        "Spike probing/output: "
+        f"{'enabled' if record_spikes else 'disabled'}"
+    )
     if run_label:
         logger.log(f"Run label: {run_label}")
     if round_idx is not None:
@@ -332,14 +338,15 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
                 conductance, delay_buffer, spikes, v, refrac = model(
                     rates, conductance, delay_buffer, spikes, v, refrac
                 )
-                spike_mask = spikes > 0
-                if spike_mask.any():
-                    b_idx, n_idx = spike_mask.nonzero(as_tuple=True)
-                    spike_batch_idx.append(b_idx.cpu())
-                    spike_neuron_idx.append(n_idx.cpu())
-                    spike_timesteps.append(
-                        torch.full((len(b_idx),), t_step, dtype=torch.long)
-                    )
+                if record_spikes:
+                    spike_mask = spikes > 0
+                    if spike_mask.any():
+                        b_idx, n_idx = spike_mask.nonzero(as_tuple=True)
+                        spike_batch_idx.append(b_idx.cpu())
+                        spike_neuron_idx.append(n_idx.cpu())
+                        spike_timesteps.append(
+                            torch.full((len(b_idx),), t_step, dtype=torch.long)
+                        )
 
                 if num_steps >= 10000 and (t_step + 1) % (num_steps // 10) == 0:
                     elapsed = time() - t_simulation_start
@@ -366,8 +373,19 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
         # ===== Phase 6: Collect and save results =====
         logger.log("Collecting results...")
         t_collect_start = time()
+        path_save = ''
 
-        if spike_batch_idx:
+        if not record_spikes:
+            df = pd.DataFrame(
+                {
+                    't': [], 'time_ms': [], 'trial': [],
+                    'neuron_index': [], 'flywire_id': [], 'exp_name': [],
+                }
+            )
+            timings['result_collection'] = 0.0
+            timings['result_save'] = 0.0
+            logger.log("  Spike probing/output disabled; no parquet written")
+        elif spike_batch_idx:
             all_batch = torch.cat(spike_batch_idx).numpy()
             all_neurons = torch.cat(spike_neuron_idx).numpy()
             all_times_steps = torch.cat(spike_timesteps).numpy()
@@ -389,17 +407,19 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
                 }
             )
 
-        timings['result_collection'] = time() - t_collect_start
+        if record_spikes:
+            timings['result_collection'] = time() - t_collect_start
 
-        t_save_start = time()
-        path_save = get_spike_output_path(exp_name, run_label, round_idx)
-        path_save.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(path_save, compression='brotli')
-        timings['result_save'] = time() - t_save_start
+            t_save_start = time()
+            path_save = get_spike_output_path(exp_name, run_label, round_idx)
+            path_save.parent.mkdir(parents=True, exist_ok=True)
+            df.to_parquet(path_save, compression='brotli')
+            timings['result_save'] = time() - t_save_start
 
         logger.log(f"  Collection:       {timings['result_collection']:.3f}s")
         logger.log(f"  Save to file:     {timings['result_save']:.3f}s")
-        logger.log(f"  Output file:      {path_save}")
+        if path_save:
+            logger.log(f"  Output file:      {path_save}")
 
         # ===== Calculate totals and metrics =====
         timings['total_elapsed'] = (

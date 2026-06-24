@@ -23,6 +23,7 @@ from benchmark import (
     T_RUN_VALUES_SEC, N_RUN_VALUES,
     output_dir, path_comp, path_con,
     get_experiment, get_spike_output_path, print_summary_table, save_result_csv,
+    spike_io_enabled,
 )
 from run_brian2_cuda import default_params
 
@@ -92,7 +93,7 @@ def _cleanup_build_dir(build_dir, logger):
     shutil.rmtree(build_dir, ignore_errors=True)
 
 
-def _create_network(params, exc, exc2, slnc, logger=None):
+def _create_network(params, exc, exc2, slnc, logger=None, record_spikes=True):
     """Create a Brian2GeNN-compatible Brian2 network."""
     t_start = time()
 
@@ -127,7 +128,7 @@ def _create_network(params, exc, exc2, slnc, logger=None):
     syn.w = df_con['Excitatory x Connectivity'].values * params['w_syn']
     t_synapses = time() - t_synapses_start
 
-    spk_mon = SpikeMonitor(neu)
+    spk_mon = SpikeMonitor(neu) if record_spikes else None
 
     t_poisson_start = time()
     pois = []
@@ -162,7 +163,7 @@ def _create_network(params, exc, exc2, slnc, logger=None):
 
 
 def _build_network(t_run_sec, experiment, exp_name, logger, timings,
-                   trial_idx=0, round_idx=None):
+                   trial_idx=0, round_idx=None, record_spikes=True):
     """Create the Brian2 network and run Brian2GeNN's build-on-run path."""
     from brian2 import device as brian_device
 
@@ -195,11 +196,14 @@ def _build_network(t_run_sec, experiment, exp_name, logger, timings,
     logger.log("Creating network...")
     t_network_start = time()
     neu, syn, spk_mon, poi_inp, _, network_timings = _create_network(
-        params, exc, exc2, slnc, logger=logger,
+        params, exc, exc2, slnc, logger=logger, record_spikes=record_spikes,
     )
     timings.update(network_timings)
 
-    net = Network(neu, syn, spk_mon, *poi_inp)
+    net_objects = [neu, syn, *poi_inp]
+    if spk_mon is not None:
+        net_objects.insert(2, spk_mon)
+    net = Network(*net_objects)
     timings['network_creation_total'] = time() - t_network_start
 
     logger.log(f"  Data loading:     {timings['data_load']:.3f}s")
@@ -229,10 +233,14 @@ def _build_network(t_run_sec, experiment, exp_name, logger, timings,
     timings['simulation_wall_total'] = build_run_wall
     timings['spike_extraction_total'] = 0.0
 
-    t_extract_start = time()
-    first_spikes = {k: v for k, v in spk_mon.spike_trains().items() if len(v)}
-    extract_time = time() - t_extract_start
-    timings['spike_extraction_total'] += extract_time
+    if record_spikes:
+        t_extract_start = time()
+        first_spikes = {k: v for k, v in spk_mon.spike_trains().items() if len(v)}
+        extract_time = time() - t_extract_start
+        timings['spike_extraction_total'] += extract_time
+    else:
+        first_spikes = {}
+        extract_time = 0.0
 
     logger.log(f"  Build/codegen wall: {timings['device_build']:.3f}s")
     logger.log(f"  First run time:     {first_sim_time:.3f}s")
@@ -256,6 +264,11 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
     logger.log_raw("=" * 80)
     logger.log("Device: GPU (Brian2GeNN)")
     logger.log(f"Experiment: {exp_name}")
+    record_spikes = spike_io_enabled()
+    logger.log(
+        "Spike probing/output: "
+        f"{'enabled' if record_spikes else 'disabled'}"
+    )
     if run_label:
         logger.log(f"Run label: {run_label}")
     if round_idx is not None:
@@ -289,6 +302,7 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
             trial_i2flyid, trial_timings, trial_spikes = _build_network(
                 t_run_sec, experiment, build_exp_name, logger, trial_timings,
                 trial_idx=trial_idx, round_idx=round_idx,
+                record_spikes=record_spikes,
             )
             if i2flyid is None:
                 i2flyid = trial_i2flyid
@@ -315,33 +329,40 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
         logger.log(f"  Avg per trial:    {timings['simulation_avg_per_trial']:.3f}s")
 
         logger.log("Collecting results...")
-        t_collect_start = time()
-
         ids, ts, trials = [], [], []
-        for trial_idx, spk_dict in enumerate(simulation_results):
-            for neuron_id, spike_times in spk_dict.items():
-                ids.extend([neuron_id] * len(spike_times))
-                trials.extend([trial_idx] * len(spike_times))
-                ts.extend([float(t) for t in spike_times])
+        path_save = ''
+        if record_spikes:
+            t_collect_start = time()
+            for trial_idx, spk_dict in enumerate(simulation_results):
+                for neuron_id, spike_times in spk_dict.items():
+                    ids.extend([neuron_id] * len(spike_times))
+                    trials.extend([trial_idx] * len(spike_times))
+                    ts.extend([float(t) for t in spike_times])
 
-        df = pd.DataFrame({
-            't': ts,
-            'trial': trials,
-            'neuron_index': ids,
-            'flywire_id': [i2flyid[i] for i in ids],
-            'exp_name': exp_name,
-        })
-        df.insert(1, 'time_ms', df['t'] * 1000.0)
-        timings['result_collection'] = time() - t_collect_start
+            df = pd.DataFrame({
+                't': ts,
+                'trial': trials,
+                'neuron_index': ids,
+                'flywire_id': [i2flyid[i] for i in ids],
+                'exp_name': exp_name,
+            })
+            df.insert(1, 'time_ms', df['t'] * 1000.0)
+            timings['result_collection'] = time() - t_collect_start
 
-        t_save_start = time()
-        path_save = get_spike_output_path(exp_name, run_label, round_idx)
-        path_save.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(path_save, compression='brotli')
-        timings['result_save'] = time() - t_save_start
+            t_save_start = time()
+            path_save = get_spike_output_path(exp_name, run_label, round_idx)
+            path_save.parent.mkdir(parents=True, exist_ok=True)
+            df.to_parquet(path_save, compression='brotli')
+            timings['result_save'] = time() - t_save_start
+        else:
+            df = pd.DataFrame()
+            timings['result_collection'] = 0.0
+            timings['result_save'] = 0.0
+            logger.log("  Spike probing/output disabled; no parquet written")
         logger.log(f"  Collection:       {timings['result_collection']:.3f}s")
         logger.log(f"  Save to file:     {timings['result_save']:.3f}s")
-        logger.log(f"  Output file:      {path_save}")
+        if path_save:
+            logger.log(f"  Output file:      {path_save}")
 
         timings['total_elapsed'] = (
             timings['id_mapping']

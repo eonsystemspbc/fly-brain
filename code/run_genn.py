@@ -24,6 +24,7 @@ from benchmark import (
     T_RUN_VALUES_SEC, N_RUN_VALUES,
     output_dir, path_comp, path_con,
     get_experiment, get_spike_output_path, print_summary_table, save_result_csv,
+    spike_io_enabled,
 )
 
 # ============================================================================
@@ -209,7 +210,8 @@ def _create_genn_models(create_neuron_model):
     return source_model, lif_model
 
 
-def _build_model(t_run_sec, n_run, experiment, model_data, exp_name, logger):
+def _build_model(t_run_sec, n_run, experiment, model_data, exp_name, logger,
+                 record_spikes=True):
     """Construct, build, and load a PyGeNN model."""
     t_construct_start = time()
     GeNNModel, create_neuron_model, init_weight_update, init_postsynaptic = (
@@ -251,7 +253,7 @@ def _build_model(t_run_sec, n_run, experiment, model_data, exp_name, logger):
             'RefracReset': refrac_reset,
         },
     )
-    neurons.spike_recording_enabled = True
+    neurons.spike_recording_enabled = record_spikes
 
     recurrent = model.add_synapse_population(
         'recurrent',
@@ -313,7 +315,10 @@ def _build_model(t_run_sec, n_run, experiment, model_data, exp_name, logger):
     build_time = time() - t_build_start
 
     num_steps = int(t_run_sec * 1000.0 / DT)
-    recording_window = _recording_window_steps(num_steps, n_run)
+    recording_window = (
+        _recording_window_steps(num_steps, n_run)
+        if record_spikes else num_steps
+    )
     logger.log("Loading GeNN model...")
     t_load_start = time()
     model.load(num_recording_timesteps=recording_window)
@@ -345,6 +350,11 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
     logger.log("Device: GPU (GeNN CUDA)")
     logger.log(f"Steps: {num_steps} (dt={DT}ms)")
     logger.log(f"Experiment: {exp_name}")
+    record_spikes = spike_io_enabled()
+    logger.log(
+        "Spike probing/output: "
+        f"{'enabled' if record_spikes else 'disabled'}"
+    )
     if run_label:
         logger.log(f"Run label: {run_label}")
     if round_idx is not None:
@@ -369,7 +379,10 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
             model, neurons, construct_time, build_time, load_time,
             delay_steps, recording_window,
         ) = (
-            _build_model(t_run_sec, n_run, experiment, model_data, exp_name, logger)
+            _build_model(
+                t_run_sec, n_run, experiment, model_data, exp_name, logger,
+                record_spikes=record_spikes,
+            )
         )
         timings['model_creation'] = construct_time
         timings['device_build'] = build_time
@@ -384,39 +397,56 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
         logger.log(f"  Device build:     {build_time:.3f}s")
         logger.log(f"  Model load:       {load_time:.3f}s")
         logger.log(f"  Synaptic delay:   {delay_steps} timestep(s)")
-        logger.log(f"  Recording window: {recording_window} timestep(s)")
+        if record_spikes:
+            logger.log(f"  Recording window: {recording_window} timestep(s)")
+        else:
+            logger.log("  Spike recording:  disabled")
 
         logger.log(f"Running simulation ({num_steps} steps, {n_run} trial(s) batched)...")
 
-        spike_chunks = []
         timings['simulation_total'] = 0.0
         timings['result_collection'] = 0.0
 
-        for chunk_start in range(0, num_steps, recording_window):
-            chunk_end = chunk_start + recording_window
+        spike_chunks = []
+        if record_spikes:
+            for chunk_start in range(0, num_steps, recording_window):
+                chunk_end = chunk_start + recording_window
+                t_simulation_start = time()
+                for _ in range(recording_window):
+                    model.step_time()
+                _synchronize_cuda()
+                timings['simulation_total'] += time() - t_simulation_start
+
+                t_collect_start = time()
+                model.pull_recording_buffers_from_device()
+                for batch_idx, (spike_times, spike_ids) in enumerate(
+                    neurons.spike_recording_data
+                ):
+                    if len(spike_times) > 0:
+                        spike_chunks.append(
+                            (batch_idx, spike_times.copy(), spike_ids.copy())
+                        )
+                timings['result_collection'] += time() - t_collect_start
+
+                if num_steps >= 10000:
+                    pct = chunk_end / num_steps * 100
+                    logger.log(
+                        f"  Progress: {pct:.0f}% ({chunk_end}/{num_steps})"
+                        f" - sim {timings['simulation_total']:.1f}s elapsed"
+                    )
+        else:
             t_simulation_start = time()
-            for _ in range(recording_window):
+            for step_idx in range(num_steps):
                 model.step_time()
+                if num_steps >= 10000 and (step_idx + 1) % (num_steps // 10) == 0:
+                    pct = (step_idx + 1) / num_steps * 100
+                    elapsed = time() - t_simulation_start
+                    logger.log(
+                        f"  Progress: {pct:.0f}% ({step_idx + 1}/{num_steps})"
+                        f" - sim {elapsed:.1f}s elapsed"
+                    )
             _synchronize_cuda()
             timings['simulation_total'] += time() - t_simulation_start
-
-            t_collect_start = time()
-            model.pull_recording_buffers_from_device()
-            for batch_idx, (spike_times, spike_ids) in enumerate(
-                neurons.spike_recording_data
-            ):
-                if len(spike_times) > 0:
-                    spike_chunks.append(
-                        (batch_idx, spike_times.copy(), spike_ids.copy())
-                    )
-            timings['result_collection'] += time() - t_collect_start
-
-            if num_steps >= 10000:
-                pct = chunk_end / num_steps * 100
-                logger.log(
-                    f"  Progress: {pct:.0f}% ({chunk_end}/{num_steps})"
-                    f" - sim {timings['simulation_total']:.1f}s elapsed"
-                )
 
         timings['simulation_avg_per_trial'] = timings['simulation_total'] / n_run
         logger.log(f"  Simulation time:  {timings['simulation_total']:.3f}s")
@@ -431,28 +461,48 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
         logger.log(f"  GeNN kernel time: {genn_kernel_time:.3f}s")
 
         logger.log("Collecting results...")
-        t_collect_start = time()
+        path_save = ''
 
-        frames = []
-        for batch_idx, spike_times, spike_ids in spike_chunks:
-            if len(spike_times) == 0:
-                continue
-            neuron_idx = spike_ids.astype(np.int64, copy=False)
-            frames.append(
-                pd.DataFrame(
+        if record_spikes:
+            t_collect_start = time()
+
+            frames = []
+            for batch_idx, spike_times, spike_ids in spike_chunks:
+                if len(spike_times) == 0:
+                    continue
+                neuron_idx = spike_ids.astype(np.int64, copy=False)
+                frames.append(
+                    pd.DataFrame(
+                        {
+                            't': spike_times.astype(np.float64, copy=False),
+                            'time_ms': spike_times.astype(np.float64, copy=False),
+                            'trial': np.full(
+                                len(spike_times), batch_idx, dtype=np.int16,
+                            ),
+                            'neuron_index': neuron_idx,
+                            'flywire_id': model_data['flywire_ids'][neuron_idx],
+                            'exp_name': exp_name,
+                        }
+                    )
+                )
+
+            if frames:
+                df = pd.concat(frames, ignore_index=True)
+            else:
+                df = pd.DataFrame(
                     {
-                        't': spike_times.astype(np.float64, copy=False),
-                        'time_ms': spike_times.astype(np.float64, copy=False),
-                        'trial': np.full(len(spike_times), batch_idx, dtype=np.int16),
-                        'neuron_index': neuron_idx,
-                        'flywire_id': model_data['flywire_ids'][neuron_idx],
-                        'exp_name': exp_name,
+                        't': [], 'time_ms': [], 'trial': [],
+                        'neuron_index': [], 'flywire_id': [], 'exp_name': [],
                     }
                 )
-            )
 
-        if frames:
-            df = pd.concat(frames, ignore_index=True)
+            timings['result_collection'] += time() - t_collect_start
+
+            t_save_start = time()
+            path_save = get_spike_output_path(exp_name, run_label, round_idx)
+            path_save.parent.mkdir(parents=True, exist_ok=True)
+            df.to_parquet(path_save, compression='brotli')
+            timings['result_save'] = time() - t_save_start
         else:
             df = pd.DataFrame(
                 {
@@ -460,19 +510,14 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
                     'neuron_index': [], 'flywire_id': [], 'exp_name': [],
                 }
             )
-
-        timings['result_collection'] += time() - t_collect_start
-
-        t_save_start = time()
-        path_save = get_spike_output_path(exp_name, run_label, round_idx)
-        path_save.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(path_save, compression='brotli')
-        timings['result_save'] = time() - t_save_start
+            timings['result_save'] = 0.0
+            logger.log("  Spike probing/output disabled; no parquet written")
         model.unload()
 
         logger.log(f"  Collection:       {timings['result_collection']:.3f}s")
         logger.log(f"  Save to file:     {timings['result_save']:.3f}s")
-        logger.log(f"  Output file:      {path_save}")
+        if path_save:
+            logger.log(f"  Output file:      {path_save}")
 
         timings['total_elapsed'] = (
             timings['network_creation_total']

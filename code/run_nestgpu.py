@@ -11,6 +11,7 @@ in a separate subprocess. This file serves dual purposes:
 Called by benchmark.py orchestrator.
 """
 
+import os
 import subprocess
 import json
 import sys
@@ -25,6 +26,7 @@ from benchmark import (
     T_RUN_VALUES_SEC, N_RUN_VALUES,
     path_comp, path_con,
     get_experiment, get_spike_output_path, print_summary_table, save_result_csv,
+    spike_io_enabled,
 )
 
 # ============================================================================
@@ -48,6 +50,44 @@ MODEL_PARAMS = {
     'f_poi': 250,     # Poisson weight scaling factor
 }
 
+
+def _configure_nestgpu_environment():
+    """Make a source-built NEST GPU install importable after distro moves."""
+    repo_dir = Path(__file__).resolve().parents[1]
+    sibling_build = repo_dir.parent / '.nest-gpu'
+
+    python_candidates = [
+        os.environ.get('NESTGPU_PYTHONLIB'),
+        sibling_build / 'pythonlib',
+        repo_dir / 'scripts' / 'nestgpu_source_files' / 'pythonlib',
+    ]
+    python_candidates.extend(Path('/usr/local/lib').glob('python*/site-packages'))
+
+    for candidate in python_candidates:
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if (path / 'nestgpu.py').exists():
+            path_str = str(path)
+            if path_str not in sys.path:
+                sys.path.insert(0, path_str)
+            existing = os.environ.get('PYTHONPATH', '')
+            if path_str not in existing.split(os.pathsep):
+                os.environ['PYTHONPATH'] = (
+                    path_str if not existing else path_str + os.pathsep + existing
+                )
+            break
+
+    if not os.environ.get('NESTGPU_LIB'):
+        lib_candidates = [
+            Path('/usr/local/lib/nestgpu/libnestgpukernel.so'),
+            sibling_build / 'build' / 'src' / 'libnestgpukernel.so',
+        ]
+        for candidate in lib_candidates:
+            if candidate.exists():
+                os.environ['NESTGPU_LIB'] = str(candidate)
+                break
+
 # ============================================================================
 # Worker: runs a single NEST GPU trial (called via subprocess)
 # ============================================================================
@@ -58,6 +98,7 @@ def _run_worker_trial(t_run_sec, trial_num, experiment_name=None,
 
     Imports nestgpu only here so the main orchestrator process never loads it.
     """
+    _configure_nestgpu_environment()
     import nestgpu as ngpu
 
     experiment = get_experiment(experiment_name)
@@ -66,6 +107,7 @@ def _run_worker_trial(t_run_sec, trial_num, experiment_name=None,
     n_max_spikes = N_MAX_SPIKE_TIMES.get(t_run_sec, 4000)
     params = dict(MODEL_PARAMS)
     params['r_poi'] = experiment['stim_rate']
+    record_spikes = spike_io_enabled()
 
     result = {
         'trial': trial_num,
@@ -146,15 +188,20 @@ def _run_worker_trial(t_run_sec, trial_num, experiment_name=None,
         result['network_creation_time'] = time() - net_start
 
         # ---- Simulate ----
-        ngpu.ActivateRecSpikeTimes(neu, n_max_spikes)
+        if record_spikes:
+            ngpu.ActivateRecSpikeTimes(neu, n_max_spikes)
 
         sim_start = time()
         ngpu.Simulate(t_run_ms)
         result['simulation_time'] = time() - sim_start
 
-        retrieval_start = time()
-        spk_trn = ngpu.GetRecSpikeTimes(neu)
-        result['spike_retrieval_time'] = time() - retrieval_start
+        if record_spikes:
+            retrieval_start = time()
+            spk_trn = ngpu.GetRecSpikeTimes(neu)
+            result['spike_retrieval_time'] = time() - retrieval_start
+        else:
+            spk_trn = []
+            result['spike_retrieval_time'] = 0.0
 
         result['n_spikes'] = sum(len(s) for s in spk_trn)
         result['n_active_neurons'] = sum(1 for s in spk_trn if len(s) > 0)
@@ -162,13 +209,14 @@ def _run_worker_trial(t_run_sec, trial_num, experiment_name=None,
 
         # Save per-trial spike data to temp parquet after simulation timing.
         spike_rows = []
-        for neuron_idx, spike_times in enumerate(spk_trn):
-            if len(spike_times) > 0:
-                fid = df_comp.index[neuron_idx]
-                for t_ms in spike_times:
-                    spike_rows.append(
-                        (t_ms / 1000.0, t_ms, trial_num, neuron_idx, fid)
-                    )
+        if record_spikes:
+            for neuron_idx, spike_times in enumerate(spk_trn):
+                if len(spike_times) > 0:
+                    fid = df_comp.index[neuron_idx]
+                    for t_ms in spike_times:
+                        spike_rows.append(
+                            (t_ms / 1000.0, t_ms, trial_num, neuron_idx, fid)
+                        )
         if spike_rows:
             df_spikes = pd.DataFrame(
                 spike_rows,
@@ -308,6 +356,11 @@ def run_single_benchmark(t_run_sec, n_run, experiment, logger,
         logger.log_raw("=" * 80)
         logger.log(f"Device: GPU (NEST GPU, user_m1 neuron)")
         logger.log(f"Experiment: {exp_name}")
+        record_spikes = spike_io_enabled()
+        logger.log(
+            "Spike probing/output: "
+            f"{'enabled' if record_spikes else 'disabled'}"
+        )
         if run_label:
             logger.log(f"Run label: {run_label}")
         if round_idx is not None:
