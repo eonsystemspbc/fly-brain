@@ -33,9 +33,11 @@ from benchmark import (
 # NEST GPU Configuration
 # ============================================================================
 
-# Max spike times per neuron per simulation call.
-# Scales with duration; too high causes CUDA OOM, too low truncates spikes.
-N_MAX_SPIKE_TIMES = {0.1: 4000, 1: 4000, 10: 4000, 100: 15000, 1000: 15000}
+# NEST GPU records at most n_max_spikes - 1 events per neuron between
+# GetRecSpikeTimes() calls. Keep the recording window short enough that
+# high-rate input neurons cannot hit that ceiling during long simulations.
+SPIKE_RECORDING_CHUNK_MS = 10_000.0
+N_MAX_SPIKE_TIMES_PER_CHUNK = 4000
 
 # Model parameters (unitless; NEST GPU uses raw numbers, not Brian2 units)
 MODEL_PARAMS = {
@@ -88,6 +90,22 @@ def _configure_nestgpu_environment():
                 os.environ['NESTGPU_LIB'] = str(candidate)
                 break
 
+
+def _append_spike_time_chunk(accumulated, chunk_spikes, elapsed_before_ms,
+                             chunk_ms):
+    """Append one NEST GPU recording chunk, preserving absolute spike times."""
+    for neuron_idx, spike_times in enumerate(chunk_spikes):
+        if len(spike_times) == 0:
+            continue
+        times = np.asarray(spike_times, dtype=np.float64)
+        if (
+            elapsed_before_ms > 0.0
+            and times.size
+            and float(np.nanmax(times)) <= chunk_ms + 1e-6
+        ):
+            times = times + elapsed_before_ms
+        accumulated[neuron_idx].extend(times.tolist())
+
 # ============================================================================
 # Worker: runs a single NEST GPU trial (called via subprocess)
 # ============================================================================
@@ -104,7 +122,6 @@ def _run_worker_trial(t_run_sec, trial_num, experiment_name=None,
     experiment = get_experiment(experiment_name)
 
     t_run_ms = t_run_sec * 1000
-    n_max_spikes = N_MAX_SPIKE_TIMES.get(t_run_sec, 4000)
     params = dict(MODEL_PARAMS)
     params['r_poi'] = experiment['stim_rate']
     record_spikes = spike_io_enabled()
@@ -189,19 +206,42 @@ def _run_worker_trial(t_run_sec, trial_num, experiment_name=None,
 
         # ---- Simulate ----
         if record_spikes:
-            ngpu.ActivateRecSpikeTimes(neu, n_max_spikes)
+            ngpu.ActivateRecSpikeTimes(neu, N_MAX_SPIKE_TIMES_PER_CHUNK)
+            spk_trn = [[] for _ in range(len(df_comp))]
+            simulation_time = 0.0
+            retrieval_time = 0.0
+            elapsed_ms = 0.0
+            remaining_ms = t_run_ms
+            recording_chunks = 0
 
-        sim_start = time()
-        ngpu.Simulate(t_run_ms)
-        result['simulation_time'] = time() - sim_start
+            while remaining_ms > 1e-9:
+                chunk_ms = min(SPIKE_RECORDING_CHUNK_MS, remaining_ms)
 
-        if record_spikes:
-            retrieval_start = time()
-            spk_trn = ngpu.GetRecSpikeTimes(neu)
-            result['spike_retrieval_time'] = time() - retrieval_start
+                sim_start = time()
+                ngpu.Simulate(chunk_ms)
+                simulation_time += time() - sim_start
+
+                retrieval_start = time()
+                chunk_spikes = ngpu.GetRecSpikeTimes(neu)
+                retrieval_time += time() - retrieval_start
+
+                _append_spike_time_chunk(
+                    spk_trn, chunk_spikes, elapsed_ms, chunk_ms,
+                )
+                elapsed_ms += chunk_ms
+                remaining_ms -= chunk_ms
+                recording_chunks += 1
+
+            result['simulation_time'] = simulation_time
+            result['spike_retrieval_time'] = retrieval_time
+            result['recording_chunks'] = recording_chunks
         else:
+            sim_start = time()
+            ngpu.Simulate(t_run_ms)
+            result['simulation_time'] = time() - sim_start
             spk_trn = []
             result['spike_retrieval_time'] = 0.0
+            result['recording_chunks'] = 0
 
         result['n_spikes'] = sum(len(s) for s in spk_trn)
         result['n_active_neurons'] = sum(1 for s in spk_trn if len(s) > 0)
