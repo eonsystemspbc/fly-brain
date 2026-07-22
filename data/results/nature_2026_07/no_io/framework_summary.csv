@@ -1,0 +1,7 @@
+framework,cases,median_sim_reduction_pct,min_sim_reduction_pct,max_sim_reduction_pct,median_total_reduction_pct,min_total_reduction_pct,max_total_reduction_pct,summed_sim_reduction_pct,summed_total_reduction_pct,sim_faster_points,total_faster_points,sim_below_all_five_normal_rounds,total_below_all_five_normal_rounds
+Brian2 (CPU),20,4.143,-10.979,37.121,7.128,-10.320,37.332,3.142,5.697,13,16,9,10
+Brian2CUDA (GPU),20,11.237,-0.724,29.908,13.469,0.371,30.754,13.772,14.793,19,20,18,18
+PyTorch (CUDA),20,9.572,0.651,39.097,7.904,0.788,39.449,5.077,5.222,20,20,18,16
+NEST GPU,20,-12.326,-28.780,15.075,4.383,-16.947,20.618,3.422,10.869,7,14,0,5
+GeNN (GPU),20,9.335,-5.405,34.313,14.219,-0.086,37.032,24.145,29.580,16,19,8,12
+Brian2GeNN (GPU),20,37.368,34.856,60.061,2.406,-135.897,32.971,35.853,13.152,20,13,20,7

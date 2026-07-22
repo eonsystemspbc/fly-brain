@@ -52,10 +52,10 @@ python main.py --brian2-cpu --pytorch --t_run 0.1 1 --n_run 1 4 8 16 32
 
 # Five-round Nature-paper benchmark suite
 # Uses the March grid: t_run=(0.1,1,10,100), n_run=(1,4,8,16,32), 5 core backends
-python main.py --paper --run-label nature_2026_05
+python main.py --paper --run-label nature_2026_07
 
 # Add Brian2GeNN as the 6th framework from the brain-fly-brian2genn environment
-python main.py --brian2genn --paper --run-label nature_2026_05
+python main.py --brian2genn --paper --run-label nature_2026_07
 ```
 
 Results are incrementally saved to `data/benchmark-results.csv` as each
@@ -71,7 +71,7 @@ is tracked as result collection rather than simulation time. A labeled paper run
 writes partitioned outputs like:
 
 ```text
-data/results/nature_2026_05/
+data/results/nature_2026_07/
 ├── manifest.csv
 ├── checksums.sha256
 ├── round_01/
@@ -84,22 +84,28 @@ data/results/nature_2026_05/
 └── round_02/
 ```
 
+The consolidated publication bundle contains 600 spike parquet files: 20 grid
+points for each of six frameworks across five rounds. The `no_io/` subfolder
+contains the corresponding one-round, 120-row timing dataset collected with
+spike probing and output disabled; it intentionally contains no spike parquet
+files.
+
 Each spike parquet has one row per spike. The canonical timing column for new
 exports is `time_ms`, with `trial`, `neuron_index`, `flywire_id`, and `exp_name`.
 The legacy `t` column is kept for existing analysis scripts.
 
-The full `nature_2026_05` spike parquet bundle is too large for regular Git
+The full `nature_2026_07` spike parquet bundle is too large for regular Git
 tracking, so parquet files are intentionally gitignored. The committed metadata
 files are `manifest.csv` and `checksums.sha256`; the full bundle is stored in
 Google Drive:
 
 https://drive.google.com/drive/folders/1jiSfb5lNfm9gwP0YyyRz5ATIrDpBAcjs
 
-After downloading the Drive folder into `data/results/nature_2026_05/`, verify
+After downloading the Drive folder into `data/results/nature_2026_07/`, verify
 the bundle with:
 
 ```bash
-cd data/results/nature_2026_05
+cd data/results/nature_2026_07
 sha256sum -c checksums.sha256
 ```
 
@@ -116,7 +122,7 @@ output:
 ```bash
 python code/compare_ground_truth.py                  # default: t_run=1s, n_run=1
 python code/compare_ground_truth.py --t_run 10 --n_run 4   # longer / averaged
-python code/compare_ground_truth.py --run-label nature_2026_05 --round 1
+python code/compare_ground_truth.py --run-label nature_2026_07 --round 1
 ```
 
 This computes active-neuron overlap (Jaccard), per-neuron firing-rate
@@ -128,9 +134,9 @@ spike-time matches within a tolerance window, use:
 
 ```bash
 python code/compare_spike_outputs.py \
-  --run-label nature_2026_05 \
+  --run-label nature_2026_07 \
   --round 1 \
-  --output-dir data/results/nature_2026_05/comparisons
+  --output-dir data/results/nature_2026_07/comparisons
 ```
 
 This writes `pairwise_summary.csv`, `pairwise_summary.json`,
@@ -142,9 +148,9 @@ all five labeled rounds, use:
 
 ```bash
 python code/compare_backend_to_brian2.py \
-  --run-label nature_2026_05 \
+  --run-label nature_2026_07 \
   --backend brian2genn \
-  --output-dir data/results/nature_2026_05/comparisons
+  --output-dir data/results/nature_2026_07/comparisons
 ```
 
 This writes `<backend>_vs_brian2_rate_summary.csv/json`,
@@ -314,10 +320,10 @@ python main.py --pytorch --genn               # PyTorch + GeNN
 python main.py
 
 # Nature-paper suite: five main backends, March parameter grid, 5 rounds
-python main.py --paper --run-label nature_2026_05
+python main.py --paper --run-label nature_2026_07
 
 # Brian2GeNN Nature-paper add-on from the separate brain-fly-brian2genn env
-python main.py --brian2genn --paper --run-label nature_2026_05
+python main.py --brian2genn --paper --run-label nature_2026_07
 ```
 
 ### `main.py` options
