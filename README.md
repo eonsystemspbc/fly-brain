@@ -411,3 +411,14 @@ Legacy version 630 data is kept in `data/archive/` for paper figure reproduction
 - Miniconda / Anaconda
 - NEST GPU compiled from source (for `--nestgpu` backend)
 - `scripts/setup_WSL_CUDA.sh` documents the full setup from a fresh Windows machine
+
+## License
+
+Except where otherwise noted, this project is licensed under the GNU General
+Public License version 2 or any later version
+(`GPL-2.0-or-later`). See [LICENSE](LICENSE).
+
+Third-party components retain their original notices. In particular, the
+Shiu et al. Brian2 materials in `code/paper-phil-drosophila/` remain available
+under their upstream [MIT License](code/paper-phil-drosophila/LICENSE), and the
+adapted NEST GPU model files retain their GPL-2.0-or-later notices.
