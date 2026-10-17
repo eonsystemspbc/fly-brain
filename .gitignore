@@ -16,3 +16,9 @@ data/results/nature_2026_07/archive*
 # PyTorch cached weight matrices (generated from connectivity data)
 data/weight_coo.pkl
 data/weight_csr.pkl
+
+# Apple MLX local environments and retained validation
+.venv/
+.pytest_cache/
+.ruff_cache/
+executions/

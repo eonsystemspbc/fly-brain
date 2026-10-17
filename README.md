@@ -412,6 +412,35 @@ Legacy version 630 data is kept in `data/archive/` for paper figure reproduction
 - NEST GPU compiled from source (for `--nestgpu` backend)
 - `scripts/setup_WSL_CUDA.sh` documents the full setup from a fresh Windows machine
 
+## Experimental Apple MLX backend
+
+On native Apple silicon macOS, use Python 3.10.14 and the optional uv environment:
+
+```sh
+uv venv --python 3.10.14
+uv pip install -r requirements-mlx.txt
+uv run --no-project python main.py --mlx --t_run 0.1 --n_run 1 --run-label mlx_first --no_log_file
+```
+
+`--mlx` is opt-in; existing backends and defaults are unchanged. Use a fresh run
+label. Trials run as sequential fresh singletons with canonical PCG64 inputs
+(seed 20261004); repeated rounds reuse inputs. The usual CSV, round manifest and
+Parquet spikes are supported, with timing/input/memory details in `.mlx.json`.
+Timing-only `--disable-spike-io` is unsupported. Install `pandas==2.3.3` to use
+the existing comparison tools in this environment.
+
+MLX uses the validated float32 model with compilation and TF32 disabled.
+Same-input one-second sugar/P9 replays match independent Brian2 fixtures exactly.
+Independent-cohort P9 equivalence remains unestablished. Measured singleton MLX
+runtime is 50–56 seconds per biological second versus 1.7–2.6 for Brian2; no
+speedup or new full-network M5 batch/ten-second acceptance is claimed.
+
+For regression checks, install `requirements-mlx-test.txt`, then run
+`python -m pytest -m 'not metal'` and, on Apple silicon, `python -m pytest -m metal`.
+The [fixtures](tests/data/mlx-replay/README.md) include independent saved inputs
+and expected spikes. A Python caller can pass their directory as `stimulus_path`
+to `run_mlx.run_single_benchmark` for verified replay.
+
 ## License
 
 Except where otherwise noted, this project is licensed under the GNU General

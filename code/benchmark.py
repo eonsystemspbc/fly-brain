@@ -408,6 +408,7 @@ BACKEND_NAMES = {
     'nestgpu': 'NEST GPU',
     'genn': 'GeNN (GPU)',
     'brian2genn': 'Brian2GeNN (GPU)',
+    'mlx': 'MLX (Apple GPU)',
 }
 
 
@@ -473,6 +474,18 @@ def run_benchmarks(backends, t_run_values=None, n_run_values=None,
                 from run_brian2_cuda import run_all_benchmarks as run_brian2
                 results = run_brian2(
                     use_cuda=(backend == 'gpu'),
+                    t_run_values=t_run_values,
+                    n_run_values=n_run_values,
+                    experiment=experiment,
+                    logger=logger,
+                    run_label=run_label,
+                    round_idx=round_label,
+                )
+                all_results.setdefault(backend, []).extend(results)
+
+            elif backend == 'mlx':
+                from run_mlx import run_all_benchmarks as run_mlx
+                results = run_mlx(
                     t_run_values=t_run_values,
                     n_run_values=n_run_values,
                     experiment=experiment,

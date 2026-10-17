@@ -36,6 +36,7 @@ BACKENDS = {
     'nestgpu':    'NEST GPU',
     'genn':       'GeNN (GPU)',
     'brian2genn': 'Brian2GeNN (GPU)',
+    'mlx':   'MLX (Apple GPU)',
 }
 
 GROUND_TRUTH_KEY = 'brian2cpp'

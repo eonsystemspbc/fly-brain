@@ -98,18 +98,23 @@ def main():
                         help='Run GeNN benchmark')
     parser.add_argument('--brian2genn', action='store_true',
                         help='Run Brian2GeNN benchmark')
+    parser.add_argument('--mlx', action='store_true',
+                        help='Run experimental Apple MLX fresh singletons')
 
     args = parser.parse_args()
 
     if args.disable_spike_io:
         os.environ[SPIKE_IO_ENV_VAR] = '1'
 
+    if args.mlx and not spike_io_enabled():
+        parser.error('--mlx requires spike recording; --disable-spike-io is unsupported')
+
     # If no backend flags specified, run the backends available in the main
     # brain-fly environment. Brian2GeNN is explicit because it requires a
     # separate Brian2<2.6 environment that conflicts with Brian2CUDA.
     if not (
         args.brian2_cpu or args.brian2cuda_gpu
-        or args.pytorch or args.nestgpu or args.genn or args.brian2genn
+        or args.pytorch or args.nestgpu or args.genn or args.brian2genn or args.mlx
     ):
         backends = ['cpu', 'gpu', 'pytorch', 'nestgpu', 'genn']
     else:
@@ -126,6 +131,8 @@ def main():
             backends.append('genn')
         if args.brian2genn:
             backends.append('brian2genn')
+        if args.mlx:
+            backends.append('mlx')
 
     # Import brian2cuda once to register the cuda_standalone device
     if 'gpu' in backends:
