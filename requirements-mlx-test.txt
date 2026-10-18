@@ -1,0 +1,3 @@
+-r requirements-mlx.txt
+pytest==9.1.1
+pandas==2.3.3

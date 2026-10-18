@@ -412,6 +412,99 @@ Legacy version 630 data is kept in `data/archive/` for paper figure reproduction
 - NEST GPU compiled from source (for `--nestgpu` backend)
 - `scripts/setup_WSL_CUDA.sh` documents the full setup from a fresh Windows machine
 
+## Apple MLX backend
+
+On native Apple silicon macOS, use Python 3.10.14 and the optional uv environment:
+
+```sh
+uv venv --python 3.10.14
+uv pip install -r requirements-mlx.txt
+uv run --no-project python main.py --mlx --t_run 0.1 --n_run 1 --run-label mlx_first --no_log_file
+```
+
+`--mlx` is opt-in; existing backends and defaults are unchanged. Use a fresh run
+label. Trials use canonical PCG64 inputs (seed 20261004); repeated rounds reuse
+inputs, and multiple trials run in a batch with independent state. The usual CSV, round manifest and
+Parquet spikes are supported, with timing/input/memory details in `.mlx.json`.
+Timing-only `--disable-spike-io` is unsupported. Install `pandas==2.3.3` to use
+the existing comparison tools in this environment.
+
+Custom Metal kernels advance neurons in 18-step windows and deliver the outgoing
+connections of spiking neurons. The engine preserves compensated float32 model
+arithmetic with TF32 disabled and records custom-kernel JIT preparation separately.
+Same-input one-second sugar/P9 replays match independent Brian2 fixtures exactly.
+Independent-cohort P9 equivalence remains unestablished.
+
+The local acceptance grid uses one warm-up and the median of five fresh-state
+runs with spike recording enabled. CPU trials use C++ standalone execution;
+multiple CPU trials run concurrently. Run it in fresh output directories:
+
+```sh
+uv pip install -r requirements-mlx-test.txt brian2==2.8.0 joblib==1.4.2
+python scripts/bench_mlx.py --backend cpu --out executions/cpu_grid
+python scripts/bench_mlx.py --backend mlx --out executions/mlx_grid --baseline executions/cpu_grid/results.json
+```
+
+The helper reports matched simulation and spike-materialization time separately
+from setup, JIT, and harness totals. It targets 5 times CPU speed, with a 2 times
+floor. The bucketed oracle remains available to Python callers through
+`engine="bucketed"`; the window engine is the default.
+Use `--rounds 3 --guard-reference executions/mlx_grid/results.json` for a quick
+development check. A regression above 10% requires a confirming repeat; a quick
+check does not replace the five-round acceptance grid.
+
+
+Measured on an Apple M5 Max with 128 GiB unified memory, MLX/Metal 0.32.3,
+Brian2 2.8.0, and a 0.1 ms timestep. These are recorded simulation plus spike
+materialization times; setup, JIT, and Parquet export are excluded from both
+sides. Each value is the median of five fresh-state runs after one warm-up.
+CPU trials run concurrently at `n=4`; MLX uses an independent-state batch.
+
+| Case | Biological seconds | Trials | CPU seconds | MLX seconds | Faster than CPU |
+|---|---:|---:|---:|---:|---:|
+| sugar | 0.1 | 1 | 0.312 | 0.0137 | 22.71× |
+| sugar | 0.1 | 4 | 0.799 | 0.0157 | 50.78× |
+| sugar | 1 | 1 | 1.312 | 0.0621 | 21.12× |
+| sugar | 1 | 4 | 2.053 | 0.1721 | 11.93× |
+| sugar | 10 | 1 | 11.237 | 0.6388 | 17.59× |
+| sugar | 10 | 4 | 13.965 | 1.8806 | 7.43× |
+| p9 | 0.1 | 1 | 0.323 | 0.0120 | 26.91× |
+| p9 | 0.1 | 4 | 0.859 | 0.0190 | 45.21× |
+| p9 | 1 | 1 | 1.312 | 0.0475 | 27.62× |
+| p9 | 1 | 4 | 1.840 | 0.1449 | 12.70× |
+| p9 | 10 | 1 | 11.019 | 0.5166 | 21.33× |
+| p9 | 10 | 4 | 12.870 | 1.6223 | 7.93× |
+
+All 12 cases exceed the 5 times goal in this measurement. Replay parity is a
+same-input correctness result; these timings are CPU-relative and do not
+measure performance against a GeNN/CUDA installation.
+
+End-to-end checks include Brotli Parquet output. Cold values are one fresh
+Python CLI process per case, including loading and compilation/JIT. Warm values
+are medians of three fresh trials after one warm-up, with the model already
+prepared/compiled on both sides.
+
+| Case | Start | CPU seconds | MLX seconds | Faster than CPU |
+|---|---|---:|---:|---:|
+| sugar | cold | 6.346 | 0.876 | 7.24× |
+| sugar | warm | 1.672 | 0.069 | 24.17× |
+| p9 | cold | 4.267 | 0.887 | 4.81× |
+| p9 | warm | 1.664 | 0.049 | 34.26× |
+
+The 100-biological-second sugar check recorded 1,712,262 spikes, matched the
+complete 10-second prefix, and stayed within 4.8% of the 10-second throughput.
+Peak MLX allocation was 343 MB; retained allocation returned to 122 MB.
+Fresh-input checks cover all five supported configurations at two new seeds,
+plus four-trial sugar/P9 batches, with every spike matching the retained oracle.
+
+For regression checks, install `requirements-mlx-test.txt`, then run
+`python -m pytest -m 'not metal'` and, on Apple silicon, `python -m pytest -m metal`.
+All 51 host/Metal checks pass, including bitwise comparisons on one million
+states, a real-network mid-run window, and the full Brian2 replay fixtures.
+The [fixtures](tests/data/mlx-replay/README.md) include independent saved inputs
+and expected spikes. A Python caller can pass their directory as `stimulus_path`
+to `run_mlx.run_single_benchmark` for verified replay.
+
 ## License
 
 Except where otherwise noted, this project is licensed under the GNU General
