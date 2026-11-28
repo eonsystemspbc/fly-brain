@@ -86,7 +86,7 @@ data/results/nature_2026_07/
 
 The consolidated publication bundle contains 600 spike parquet files: 20 grid
 points for each of six frameworks across five rounds. The `no_io/` subfolder
-contains the corresponding one-round, 120-row timing dataset collected with
+contains the corresponding five-round, 600-row timing dataset collected with
 spike probing and output disabled; it intentionally contains no spike parquet
 files.
 

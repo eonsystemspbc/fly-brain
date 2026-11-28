@@ -18,7 +18,7 @@ pre-fix PyTorch or NEST outputs are included.
 
 ## No-I/O Timings
 
-The `no_io/` directory contains the complete one-round no-I/O timing grid for
+The `no_io/` directory contains the complete five-round no-I/O timing grid for
 all six frameworks under label `nature_2026_07_noio`. Spike probing, retrieval,
 and parquet output were disabled, so no spike files or spike manifest exist for
 that condition.
